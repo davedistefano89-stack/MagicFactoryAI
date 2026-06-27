@@ -1,0 +1,27 @@
+{
+  "app": {
+    "name": "Magic Factory AI",
+    "version": "1.0.0",
+    "window_width": 1400,
+    "window_height": 900,
+    "sidebar_width": 260
+  },
+  "database": {
+    "filename": "magic_factory.db"
+  },
+  "export": {
+    "default_format": "png",
+    "default_dpi": 300,
+    "output_subfolder": "exports"
+  },
+  "generator": {
+    "default_width": 1024,
+    "default_height": 1024,
+    "line_thickness": 2
+  },
+  "logging": {
+    "level": "INFO",
+    "max_bytes": 5242880,
+    "backup_count": 5
+  }
+}
