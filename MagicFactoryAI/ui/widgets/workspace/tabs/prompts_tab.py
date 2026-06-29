@@ -118,6 +118,26 @@ class PromptsTab(WorkspaceTabBase):
             self._tags_input,
         )
 
+        self._character_input = QLineEdit()
+        self._character_input.setPlaceholderText("Character")
+        self._character_input.textChanged.connect(self._update_prompt_preview)
+        form.addRow("Character", self._character_input)
+
+        self._style_input = QLineEdit()
+        self._style_input.setPlaceholderText("Style")
+        self._style_input.textChanged.connect(self._update_prompt_preview)
+        form.addRow("Style", self._style_input)
+
+        self._background_input = QLineEdit()
+        self._background_input.setPlaceholderText("Background")
+        self._background_input.textChanged.connect(self._update_prompt_preview)
+        form.addRow("Background", self._background_input)
+
+        self._prompt_preview = QTextEdit()
+        self._prompt_preview.setReadOnly(True)
+        self._prompt_preview.setMaximumHeight(100)
+        form.addRow("Final Prompt Preview", self._prompt_preview)
+
         self._content_input = QTextEdit()
         self._content_input.setMinimumHeight(160)
 
@@ -151,6 +171,27 @@ class PromptsTab(WorkspaceTabBase):
         splitter.setSizes([380, 520])
 
         self._layout.addWidget(splitter)
+
+    def _build_prompt_preview(self) -> str:
+        parts = []
+
+        character = self._character_input.text().strip()
+        style = self._style_input.text().strip()
+        background = self._background_input.text().strip()
+
+        if character:
+            parts.append(f"Character: {character}")
+        if style:
+            parts.append(f"Style: {style}")
+        if background:
+            parts.append(f"Background: {background}")
+
+        return "\n".join(parts)
+
+    def _update_prompt_preview(self) -> None:
+        self._prompt_preview.setPlainText(
+            self._build_prompt_preview()
+        )
 
     def _load_prompts(self):
 
@@ -291,6 +332,10 @@ class PromptsTab(WorkspaceTabBase):
         self._title_input.clear()
         self._content_input.clear()
         self._tags_input.clear()
+        self._character_input.clear()
+        self._style_input.clear()
+        self._background_input.clear()
+        self._prompt_preview.clear()
 
         self._type_combo.setCurrentIndex(0)
 

@@ -12,15 +12,36 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIService:
-    def __init__(self):
+    """
+    Central OpenAI service used by the application.
+
+    Responsibilities
+    ----------------
+    - Build prompts
+    - Generate images
+    - Return image bytes
+    - Save generated images
+    - Test API connection
+    """
+
+    def __init__(self) -> None:
+
         load_dotenv()
 
         api_key = os.getenv("OPENAI_API_KEY")
 
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not found.")
+            raise RuntimeError(
+                "OPENAI_API_KEY not found."
+            )
 
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(
+            api_key=api_key,
+        )
+
+    # ---------------------------------------------------------
+    # Prompt Builder
+    # ---------------------------------------------------------
 
     def build_prompt(
         self,
@@ -67,21 +88,56 @@ Complexity:
 {complexity}
 """
 
-        response = self.client.chat.completions.create(
-            model="gpt-5",
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ],
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except Exception as exc:
+            self._handle_api_error(exc)
+
+    # ---------------------------------------------------------
+    # Image Generation
+    # ---------------------------------------------------------
+
+    def generate_image_bytes(
+        self,
+        prompt: str,
+        size: str = "1024x1024",
+    ) -> bytes:
+        """
+        Generate an image and return PNG bytes.
+        """
+
+        logger.info(
+            "Generating image bytes..."
         )
 
-        return response.choices[0].message.content.strip()
+        try:
+            result = self.client.images.generate(
+                model="gpt-image-1",
+                prompt=prompt,
+                size=size,
+            )
+
+            image_base64 = result.data[0].b64_json
+
+            return base64.b64decode(image_base64)
+
+        except Exception as exc:
+            self._handle_api_error(exc)
 
     def generate_image(
         self,
@@ -91,25 +147,34 @@ Complexity:
         size: str = "1024x1024",
     ) -> Path:
 
-        output_folder.mkdir(parents=True, exist_ok=True)
+        output_folder.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        logger.info("Generating image...")
-
-        result = self.client.images.generate(
-            model="gpt-image-1",
+        image_bytes = self.generate_image_bytes(
             prompt=prompt,
             size=size,
         )
 
-        image_base64 = result.data[0].b64_json
-        image_bytes = base64.b64decode(image_base64)
-
         output_path = output_folder / filename
 
-        with open(output_path, "wb") as file:
+        with open(
+            output_path,
+            "wb",
+        ) as file:
             file.write(image_bytes)
 
+        logger.info(
+            "Image saved: %s",
+            output_path,
+        )
+
         return output_path
+    
+    # ---------------------------------------------------------
+    # Complete Workflow
+    # ---------------------------------------------------------
 
     def generate_coloring_page(
         self,
@@ -120,6 +185,9 @@ Complexity:
         age: str = "3-6",
         complexity: str = "simple",
     ) -> Path:
+        """
+        Generate a complete coloring page.
+        """
 
         logger.info("Building AI prompt...")
 
@@ -142,14 +210,64 @@ Complexity:
 
         return image
 
+    # ---------------------------------------------------------
+    # Connection
+    # ---------------------------------------------------------
+
     def test_connection(self) -> bool:
         try:
             self.client.models.list()
             return True
-
         except Exception as exc:
+            # Log original exception for debugging and return False
             logger.exception(exc)
             return False
+
+    def _handle_api_error(self, exc: Exception) -> None:
+        """
+        Map common OpenAI errors to user-friendly messages, log the
+        original exception, and raise a RuntimeError with the friendly
+        message so callers can display it to users.
+        """
+
+        # Always log full exception and traceback
+        logger.exception(exc)
+
+        msg = str(exc).lower() if exc is not None else ""
+
+        if "insufficient_quota" in msg or "insufficient_quota" in getattr(exc, "code", ""):
+            friendly = (
+                "Insufficient quota: your OpenAI account has no remaining quota. "
+                "Check your billing and subscription settings."
+            )
+        elif "invalid_api_key" in msg or "invalid_api_key" in getattr(exc, "code", ""):
+            friendly = (
+                "Invalid API key: please verify your OPENAI_API_KEY environment variable."
+            )
+        elif "rate_limit_exceeded" in msg or "rate_limit" in msg:
+            friendly = (
+                "Rate limit exceeded: too many requests. Please wait a moment and try again."
+            )
+        elif "authentication_error" in msg or "invalid_auth" in msg or "authentication" in msg:
+            friendly = (
+                "Authentication failed: check your API key and permissions."
+            )
+        elif "timeout" in msg or "network" in msg or "timed out" in msg:
+            friendly = (
+                "Network timeout: check your internet connection and try again."
+            )
+        else:
+            friendly = (
+                "An error occurred while communicating with the OpenAI API. "
+                "See logs for details."
+            )
+
+        # Raise a user-facing error while preserving original exception as __cause__
+        raise RuntimeError(friendly) from exc
+
+    # ---------------------------------------------------------
+    # Presets
+    # ---------------------------------------------------------
 
     def generate_princess(
         self,

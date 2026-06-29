@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -22,6 +23,7 @@ from ui.widgets.workspace.tabs import (
     PromptsTab,
     ReviewTab,
 )
+from ui.widgets.workspace.tabs.ai_generator_tab import AIGeneratorTab
 from ui.widgets.workspace.workspace_header import WorkspaceHeader
 
 
@@ -56,12 +58,16 @@ class ProjectWorkspaceScreen(QWidget):
         root.addWidget(self._header)
 
         self._body_widget = QWidget()
+        self._body_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         body = QHBoxLayout(self._body_widget)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
         self._category_panel = CategoryPanel(self._workspace)
-        body.addWidget(self._category_panel)
+        body.addWidget(self._category_panel, stretch=0)
 
         right_col = QVBoxLayout()
         right_col.setContentsMargins(16, 0, 0, 0)
@@ -69,12 +75,16 @@ class ProjectWorkspaceScreen(QWidget):
 
         self._tab_widget = QTabWidget()
         self._tab_widget.setDocumentMode(True)
+        self._tab_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         tab_defs = [
             ("categories", "Categories", CategoriesTab),
             ("prompts", "Prompts", PromptsTab),
             ("library", "Library", LibraryTab),
-            ("generator", "Generator", GeneratorTab),
+            ("generator", "Generator", AIGeneratorTab),
             ("review", "Review", ReviewTab),
             ("export", "Export", ExportTab),
         ]
@@ -84,7 +94,7 @@ class ProjectWorkspaceScreen(QWidget):
             self._tabs[tab_id] = tab
             self._tab_widget.addTab(tab, label)
 
-        right_col.addWidget(self._tab_widget)
+        right_col.addWidget(self._tab_widget, stretch=1)
 
         body.addLayout(right_col, stretch=1)
 
@@ -104,7 +114,7 @@ class ProjectWorkspaceScreen(QWidget):
         )
         self._empty_state.hide()
 
-        root.addWidget(self._empty_state)
+        root.addWidget(self._empty_state, stretch=1)
 
     def _connect_signals(self) -> None:
         self._workspace.project_changed.connect(self._on_project_changed)

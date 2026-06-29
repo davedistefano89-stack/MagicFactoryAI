@@ -33,3 +33,4 @@ htmlcov/
 # Environment
 .env
 .env.*
+*.zip

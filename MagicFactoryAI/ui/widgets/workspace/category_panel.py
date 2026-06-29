@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -85,7 +86,11 @@ class CategoryPanel(QFrame):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.setFixedWidth(220)
+        self.setMinimumWidth(180)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
         self.setStyleSheet(f"""
             QFrame {{
                 background-color: {Colors.SIDEBAR_BG};
@@ -115,7 +120,7 @@ class CategoryPanel(QFrame):
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_container)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, stretch=1)
 
     def refresh(self) -> None:
         while self._list_layout.count() > 1:

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from app.controllers.app_controller import AppController
 from app.controllers.workspace_controller import WorkspaceController
 
 
-class WorkspaceTabBase(QWidget):
+class WorkspaceTabBase(QScrollArea):
     """Base tab with workspace context and refresh hook."""
 
     def __init__(
@@ -20,9 +20,14 @@ class WorkspaceTabBase(QWidget):
         super().__init__(parent)
         self.controller = controller
         self.workspace = workspace
-        self._layout = QVBoxLayout(self)
+        self.setWidgetResizable(True)
+
+        self._container = QWidget()
+        self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(16, 12, 16, 12)
         self._layout.setSpacing(12)
+        self.setWidget(self._container)
+
         self._build_ui()
 
     def _build_ui(self) -> None:

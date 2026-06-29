@@ -6,6 +6,9 @@ from typing import List, Optional
 
 from app.controllers.app_controller import AppController
 from models.prompt import Prompt, PromptType
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class PromptController:
@@ -34,26 +37,30 @@ class PromptController:
             category_id=category_id,
         )
 
-        return self._app.prompts.create(prompt)
+        created = self._app.prompts.create(prompt)
+
+        logger.info("Prompt created: %s", created.title)
+
+        return created
 
     def update_prompt(self, prompt: Prompt) -> Prompt:
-        return self._app.prompts.update(prompt)
+        updated = self._app.prompts.update(prompt)
+        logger.info("Prompt updated: %s", updated.title)
+        return updated
 
     def delete_prompt(self, prompt_id: int) -> None:
         self._app.prompts.delete(prompt_id)
+        logger.info("Prompt deleted: %s", prompt_id)
 
     def get_all(
         self,
         category_id: Optional[int] = None,
         project_id: Optional[int] = None,
-    ):
+    ) -> List[Prompt]:
 
         prompts = self._app.prompts.get_all()
 
-        print("PROMPTS:", len(prompts))
-
-        for p in prompts:
-            print(p.id, p.title)
+        logger.debug("Loaded %d prompts.", len(prompts))
 
         return prompts
 
@@ -63,14 +70,38 @@ class PromptController:
         category_id: Optional[int] = None,
         project_id: Optional[int] = None,
     ) -> List[Prompt]:
-        return self._app.prompts.search(query, category_id, project_id)
 
-    def toggle_favorite(self, prompt_id: int) -> Optional[Prompt]:
+        results = self._app.prompts.search(
+            query,
+            category_id,
+            project_id,
+        )
+
+        logger.debug(
+            "Prompt search '%s' returned %d results.",
+            query,
+            len(results),
+        )
+
+        return results
+
+    def toggle_favorite(
+        self,
+        prompt_id: int,
+    ) -> Optional[Prompt]:
 
         prompt = self._app.prompts.get_by_id(prompt_id)
 
         if prompt:
             prompt.is_favorite = not prompt.is_favorite
-            return self._app.prompts.update(prompt)
+            updated = self._app.prompts.update(prompt)
+
+            logger.info(
+                "Prompt '%s' favorite=%s",
+                updated.title,
+                updated.is_favorite,
+            )
+
+            return updated
 
         return None
