@@ -30,6 +30,7 @@ from ui.screens.base_screen import BaseScreen
 from ui.widgets.asset_inspector_dialog import AssetInspectorDialog
 from ui.widgets.duplicate_finder_dialog import DuplicateFinderDialog
 from ui.widgets.page_header import PageHeader
+from ui.widgets.similar_finder_dialog import SimilarFinderDialog
 from ui.widgets.tag_utils import collect_all_tags, get_tags
 
 _FILTER_CHIP_STYLE = (
@@ -83,6 +84,11 @@ class LibraryScreen(BaseScreen):
         dup_btn.setProperty("cssClass", "ghost")
         dup_btn.clicked.connect(self._on_find_duplicates)
         filter_row.addWidget(dup_btn)
+
+        sim_btn = QPushButton("Find Similar")
+        sim_btn.setProperty("cssClass", "ghost")
+        sim_btn.clicked.connect(self._on_find_similar)
+        filter_row.addWidget(sim_btn)
 
         self._layout.addLayout(filter_row)
 
@@ -256,6 +262,16 @@ class LibraryScreen(BaseScreen):
                 self.refresh()
             except Exception as exc:
                 QMessageBox.critical(self, "Import Failed", str(exc))
+
+    def _on_find_similar(self) -> None:
+        dlg = SimilarFinderDialog(
+            self._all_assets,
+            self._asset_ctrl,
+            self.controller,
+            on_deleted=self.refresh,
+            parent=self,
+        )
+        dlg.exec()
 
     def _on_find_duplicates(self) -> None:
         dlg = DuplicateFinderDialog(
