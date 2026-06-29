@@ -28,6 +28,7 @@ from core.theme.colors import Colors
 from models.asset import Asset, AssetStatus
 from ui.screens.base_screen import BaseScreen
 from ui.widgets.asset_inspector_dialog import AssetInspectorDialog
+from ui.widgets.duplicate_finder_dialog import DuplicateFinderDialog
 from ui.widgets.page_header import PageHeader
 from ui.widgets.tag_utils import collect_all_tags, get_tags
 
@@ -77,6 +78,11 @@ class LibraryScreen(BaseScreen):
         self._status_combo.setFixedWidth(130)
         self._status_combo.currentIndexChanged.connect(self._apply_filters)
         filter_row.addWidget(self._status_combo)
+
+        dup_btn = QPushButton("Find Duplicates")
+        dup_btn.setProperty("cssClass", "ghost")
+        dup_btn.clicked.connect(self._on_find_duplicates)
+        filter_row.addWidget(dup_btn)
 
         self._layout.addLayout(filter_row)
 
@@ -250,6 +256,16 @@ class LibraryScreen(BaseScreen):
                 self.refresh()
             except Exception as exc:
                 QMessageBox.critical(self, "Import Failed", str(exc))
+
+    def _on_find_duplicates(self) -> None:
+        dlg = DuplicateFinderDialog(
+            self._all_assets,
+            self._asset_ctrl,
+            self.controller,
+            on_deleted=self.refresh,
+            parent=self,
+        )
+        dlg.exec()
 
     def _on_row_double_clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self._assets):
