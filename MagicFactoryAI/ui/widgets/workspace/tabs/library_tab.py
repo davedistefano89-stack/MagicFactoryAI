@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from app.controllers.asset_controller import AssetController
 from core.theme.colors import Colors
 from models.asset import AssetStatus
+from ui.widgets.asset_inspector_dialog import AssetInspectorDialog
 from ui.widgets.workspace.tabs.base_tab import WorkspaceTabBase
 
 
@@ -37,6 +38,8 @@ class LibraryTab(WorkspaceTabBase):
         header_row.addWidget(import_btn)
         self._layout.addLayout(header_row)
 
+        self._assets: list = []
+
         self._table = QTableWidget()
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(["Name", "Status", "Size", "File", "Actions"])
@@ -44,6 +47,7 @@ class LibraryTab(WorkspaceTabBase):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
+        self._table.cellDoubleClicked.connect(self._on_row_double_clicked)
         self._layout.addWidget(self._table)
 
     def _load_assets(self):
@@ -53,6 +57,11 @@ class LibraryTab(WorkspaceTabBase):
         if self.workspace.category_id is not None:
             kwargs["category_id"] = self.workspace.category_id
         return self._asset_ctrl.get_all(**kwargs)
+
+    def _on_row_double_clicked(self, row: int, _col: int) -> None:
+        if 0 <= row < len(self._assets):
+            dlg = AssetInspectorDialog(self._assets[row], self.controller, parent=self)
+            dlg.exec()
 
     def _on_import(self) -> None:
         if not self.workspace.project_id:
@@ -99,6 +108,7 @@ class LibraryTab(WorkspaceTabBase):
 
     def refresh(self) -> None:
         assets = self._load_assets()
+        self._assets = assets
         self._table.setRowCount(len(assets))
 
         status_colors = {

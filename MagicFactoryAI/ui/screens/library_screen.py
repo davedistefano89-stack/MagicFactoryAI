@@ -21,6 +21,7 @@ from app.controllers.asset_controller import AssetController
 from core.theme.colors import Colors
 from models.asset import AssetStatus
 from ui.screens.base_screen import BaseScreen
+from ui.widgets.asset_inspector_dialog import AssetInspectorDialog
 from ui.widgets.page_header import PageHeader
 
 
@@ -39,6 +40,8 @@ class LibraryScreen(BaseScreen):
             action_callback=self._on_import,
         ))
 
+        self._assets: list = []
+
         self._table = QTableWidget()
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(["Name", "Status", "Size", "File", "Actions"])
@@ -46,6 +49,7 @@ class LibraryScreen(BaseScreen):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
+        self._table.cellDoubleClicked.connect(self._on_row_double_clicked)
         self._layout.addWidget(self._table)
 
     def _on_import(self) -> None:
@@ -69,6 +73,11 @@ class LibraryScreen(BaseScreen):
             except Exception as exc:
                 QMessageBox.critical(self, "Import Failed", str(exc))
 
+    def _on_row_double_clicked(self, row: int, _col: int) -> None:
+        if 0 <= row < len(self._assets):
+            dlg = AssetInspectorDialog(self._assets[row], self.controller, parent=self)
+            dlg.exec()
+
     def _on_approve(self, asset_id: int) -> None:
         self._asset_ctrl.approve_asset(asset_id)
         self.refresh()
@@ -88,6 +97,7 @@ class LibraryScreen(BaseScreen):
 
     def refresh(self) -> None:
         assets = self._asset_ctrl.get_all()
+        self._assets = assets
         self._table.setRowCount(len(assets))
 
         status_colors = {
