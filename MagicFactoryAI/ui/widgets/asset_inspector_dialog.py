@@ -1,20 +1,22 @@
-"""Asset Inspector PRO — read-only two-panel viewer dialog."""
+"""Asset Inspector PRO — read-only two-panel viewer with tagging."""
 
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap, QGuiApplication
 from PySide6.QtWidgets import (
+    QCompleter,
     QDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,21 +27,76 @@ from PySide6.QtWidgets import (
 )
 
 from models.asset import Asset
+from ui.widgets.tag_utils import collect_all_tags, get_tags, set_tags
+
+_REMOVE_CHIP_STYLE = (
+    "QPushButton { background-color: #334155; border: 1px solid #475569;"
+    " border-radius: 12px; padding: 3px 12px; font-size: 12px; color: #F8FAFC; }"
+    " QPushButton:hover { background-color: #EF4444; border-color: #EF4444; color: #FFFFFF; }"
+)
+
+
+class _TagInputDialog(QDialog):
+    """Minimal tag input dialog with QCompleter autocomplete."""
+
+    def __init__(self, known_tags: List[str], parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Add Tag")
+        self.setFixedSize(340, 100)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
+
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText("Type a tag…")
+
+        completer = QCompleter(known_tags)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._edit.setCompleter(completer)
+        layout.addWidget(self._edit)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("Add")
+        ok_btn.setProperty("cssClass", "primary")
+        ok_btn.clicked.connect(self.accept)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        layout.addLayout(btns)
+
+        self._edit.returnPressed.connect(self.accept)
+
+    def tag_text(self) -> str:
+        return self._edit.text().strip()
 
 
 class AssetInspectorDialog(QDialog):
-    """Professional read-only Asset Inspector with split-panel layout."""
+    """Professional read-only Asset Inspector with split-panel layout and tagging."""
 
-    def __init__(self, asset: Asset, controller, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        asset: Asset,
+        controller,
+        known_tags: Optional[List[str]] = None,
+        on_tags_changed: Optional[Callable] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._asset = asset
         self._controller = controller
+        self._known_tags: List[str] = known_tags or []
+        self._on_tags_changed: Optional[Callable] = on_tags_changed
         self._zoom_factor: float = 1.0
         self._original_pixmap: Optional[QPixmap] = None
 
         self.setWindowTitle(f"Asset Inspector — {asset.name}")
-        self.setMinimumSize(1100, 680)
-        self.resize(1200, 720)
+        self.setMinimumSize(1100, 720)
+        self.resize(1240, 760)
         self.setModal(True)
 
         self._build_ui()
@@ -105,7 +162,6 @@ class AssetInspectorDialog(QDialog):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
         )
         self._image_scroll.setWidget(self._image_label)
-
         layout.addWidget(self._image_scroll, 1)
 
         self._zoom_in_btn.clicked.connect(self._on_zoom_in)
@@ -127,6 +183,7 @@ class AssetInspectorDialog(QDialog):
         layout.setSpacing(14)
 
         layout.addWidget(self._build_metadata_group())
+        layout.addWidget(self._build_tags_group())
         layout.addWidget(self._build_prompt_group())
         layout.addWidget(self._build_neg_prompt_group())
         layout.addWidget(self._build_technical_group())
@@ -147,6 +204,33 @@ class AssetInspectorDialog(QDialog):
         self._meta_provider = self._meta_row(layout, "Provider")
         self._meta_model = self._meta_row(layout, "Model")
         self._meta_created = self._meta_row(layout, "Created")
+
+        return box
+
+    def _build_tags_group(self) -> QGroupBox:
+        box = QGroupBox("Tags")
+        layout = QVBoxLayout(box)
+        layout.setSpacing(8)
+
+        self._tags_scroll = QScrollArea()
+        self._tags_scroll.setWidgetResizable(True)
+        self._tags_scroll.setFixedHeight(46)
+        self._tags_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._tags_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._tags_chips_widget = QWidget()
+        self._tags_chips_layout = QHBoxLayout(self._tags_chips_widget)
+        self._tags_chips_layout.setContentsMargins(0, 4, 0, 4)
+        self._tags_chips_layout.setSpacing(6)
+        self._tags_chips_layout.addStretch()
+        self._tags_scroll.setWidget(self._tags_chips_widget)
+        layout.addWidget(self._tags_scroll)
+
+        add_btn = QPushButton("+ Add Tag")
+        add_btn.setProperty("cssClass", "ghost")
+        add_btn.setFixedHeight(28)
+        add_btn.clicked.connect(self._on_add_tag)
+        layout.addWidget(add_btn)
 
         return box
 
@@ -234,6 +318,54 @@ class AssetInspectorDialog(QDialog):
 
         return value_lbl
 
+    def _refresh_tags_ui(self) -> None:
+        while self._tags_chips_layout.count() > 1:
+            item = self._tags_chips_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for tag in get_tags(self._asset):
+            chip = QPushButton(f"{tag}  ×")
+            chip.setFixedHeight(26)
+            chip.setStyleSheet(_REMOVE_CHIP_STYLE)
+            chip.clicked.connect(lambda _, t=tag: self._on_remove_tag(t))
+            self._tags_chips_layout.insertWidget(
+                self._tags_chips_layout.count() - 1, chip
+            )
+
+    def _on_add_tag(self) -> None:
+        try:
+            all_assets = self._controller.assets.get_all()
+            known = collect_all_tags(all_assets)
+        except Exception:
+            known = list(self._known_tags)
+
+        dlg = _TagInputDialog(known, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_tag = dlg.tag_text()
+        if not new_tag:
+            return
+
+        current = get_tags(self._asset)
+        if new_tag.lower() in {t.lower() for t in current}:
+            return
+
+        current.append(new_tag)
+        self._save_tags(current)
+
+    def _on_remove_tag(self, tag: str) -> None:
+        current = [t for t in get_tags(self._asset) if t != tag]
+        self._save_tags(current)
+
+    def _save_tags(self, tags: List[str]) -> None:
+        set_tags(self._asset, tags)
+        self._controller.assets.update(self._asset)
+        self._refresh_tags_ui()
+        if self._on_tags_changed:
+            self._on_tags_changed()
+
     def _load_image(self) -> None:
         file_path = self._asset.file_path
         if file_path and Path(file_path).exists():
@@ -242,16 +374,13 @@ class AssetInspectorDialog(QDialog):
                 self._original_pixmap = pixmap
                 self._on_fit()
                 return
-
         self._image_label.setText("Image not available")
 
     def _apply_zoom(self) -> None:
         if self._original_pixmap is None:
             return
-
         new_w = int(self._original_pixmap.width() * self._zoom_factor)
         new_h = int(self._original_pixmap.height() * self._zoom_factor)
-
         scaled = self._original_pixmap.scaled(
             new_w, new_h,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -284,7 +413,7 @@ class AssetInspectorDialog(QDialog):
 
     def _populate_metadata(self) -> None:
         asset = self._asset
-        meta = {}
+        meta: dict = {}
         try:
             meta = json.loads(asset.metadata_json or "{}")
         except (json.JSONDecodeError, TypeError):
@@ -330,6 +459,8 @@ class AssetInspectorDialog(QDialog):
 
         self._tech_width.setText(f"{asset.width} px" if asset.width else "—")
         self._tech_height.setText(f"{asset.height} px" if asset.height else "—")
+
+        self._refresh_tags_ui()
 
     @staticmethod
     def _copy_text(text: str) -> None:
