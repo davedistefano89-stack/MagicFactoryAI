@@ -26,5 +26,16 @@
     "level": "INFO",
     "max_bytes": 5242880,
     "backup_count": 5
+  },
+  "performance": {
+    "library_page_size": 200,
+    "library_prefetch_rows": 50,
+    "thumbnail_cache_mb": 64,
+    "thumbnail_max_size": 192,
+    "search_debounce_ms": 250
+  },
+  "dev": {
+    "enabled": false,
+    "show_diagnostics": false
   }
 }

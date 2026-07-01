@@ -102,7 +102,7 @@ class CategoryPanel(QFrame):
         layout.setContentsMargins(12, 16, 12, 16)
         layout.setSpacing(8)
 
-        header = QLabel("Categories")
+        header = QLabel("Categorie")
         header.setStyleSheet(
             f"font-size: 13px; font-weight: 700; color: {Colors.TEXT_MUTED};"
             " padding: 0 4px 8px 4px;"
@@ -131,19 +131,19 @@ class CategoryPanel(QFrame):
 
         project = self._workspace.current_project
         if not project:
-            empty = QLabel("No project open")
+            empty = QLabel("Nessun progetto aperto")
             empty.setStyleSheet(f"color: {Colors.TEXT_MUTED}; padding: 8px;")
             self._list_layout.insertWidget(0, empty)
             return
 
-        all_btn = CategoryButton(None, "  📂  All Categories")
+        all_btn = CategoryButton(None, "  📂  Tutte le categorie")
         all_btn.clicked.connect(lambda: self._on_select(None))
         self._list_layout.insertWidget(0, all_btn)
         self._buttons.append(all_btn)
 
         categories = self._workspace.get_categories()
         if not categories:
-            hint = QLabel("No categories yet")
+            hint = QLabel("Nessuna categoria")
             hint.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px; padding: 8px;")
             self._list_layout.insertWidget(1, hint)
         else:

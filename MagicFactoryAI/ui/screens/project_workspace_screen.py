@@ -16,6 +16,7 @@ from app.controllers.app_controller import AppController
 from core.theme.colors import Colors
 from ui.widgets.workspace.category_panel import CategoryPanel
 from ui.widgets.workspace.tabs import (
+    BookBuilderTab,
     CategoriesTab,
     ExportTab,
     GeneratorTab,
@@ -86,6 +87,7 @@ class ProjectWorkspaceScreen(QWidget):
             ("library", "Library", LibraryTab),
             ("generator", "Generator", AIGeneratorTab),
             ("review", "Review", ReviewTab),
+            ("book_builder", "Book Builder", BookBuilderTab),
             ("export", "Export", ExportTab),
         ]
 
@@ -122,6 +124,15 @@ class ProjectWorkspaceScreen(QWidget):
         self._category_panel.category_selected.connect(
             self._workspace.select_category
         )
+        # Sprint: forward active tab index so it can be persisted into the
+        # recovery snapshot (and restored on Recover).
+        self._tab_widget.currentChanged.connect(self._on_current_tab_changed)
+
+    def _on_current_tab_changed(self, index: int) -> None:
+        try:
+            self._workspace.set_active_tab_index(int(index))
+        except Exception:
+            pass
 
     def _on_project_changed(self, _project_id: int) -> None:
         self._update_visibility()
@@ -141,6 +152,13 @@ class ProjectWorkspaceScreen(QWidget):
         for tab in self._tabs.values():
             tab.refresh()
 
+        # After re-population, sync the workspace's notion of which tab is
+        # active so it gets captured in the next recovery snapshot.
+        try:
+            self._workspace.set_active_tab_index(self._tab_widget.currentIndex())
+        except Exception:
+            pass
+
     def open_project(self, project_id: int) -> None:
         self._workspace.open_project(project_id)
 
@@ -150,3 +168,13 @@ class ProjectWorkspaceScreen(QWidget):
 
     def on_show(self) -> None:
         self.refresh()
+
+    def set_active_tab(self, index: int) -> None:
+        """Programmatically switch tabs.
+
+        Sprint: Book Project Dashboard PRO #1 — quick-action buttons
+        emit ``enter_workspace_tab(index)``; the MainWindow calls this
+        when the workspace screen becomes visible.
+        """
+        target = max(0, min(int(index), self._tab_widget.count() - 1))
+        self._tab_widget.setCurrentIndex(target)

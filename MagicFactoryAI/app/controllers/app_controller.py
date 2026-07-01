@@ -27,6 +27,7 @@ from engine.generator.queue_manager import QueueManager
 from engine.json.pack_builder import PackBuilder
 
 from services.openai_service import OpenAIService
+from services.undo_manager import UndoManager
 
 from utils.logger import get_logger
 
@@ -106,6 +107,16 @@ class AppController:
         # -------------------------------------------------
 
         self.workspace = WorkspaceController(self)
+
+        # Single, app-wide Undo / Redo stack reused by every tab.
+        self.undo_manager = UndoManager()
+        # Whenever an undo/redo is applied, repaint every open tab.
+        try:
+            self.undo_manager.operation_applied.connect(
+                self.workspace.workspace_refresh
+            )
+        except Exception:
+            pass
 
         self.ai_generator = AIGeneratorController(
             self,

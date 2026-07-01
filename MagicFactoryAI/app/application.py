@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
@@ -22,7 +23,7 @@ class MagicFactoryApp:
     def __init__(self) -> None:
         self._settings = SettingsManager.instance()
         setup_logging(level=self._settings.log_level)
-        self._controller = AppController.instance()
+        self._controller: AppController | None = None
         self._app: QApplication | None = None
         self._window: MainWindow | None = None
 
@@ -37,10 +38,21 @@ class MagicFactoryApp:
 
         ThemeManager.apply(self._app)
 
+        self._controller = AppController.instance()
         self._window = MainWindow(self._controller)
         width, height = self._settings.window_size
         self._window.resize(width, height)
         self._window.show()
+
+        # Sprint: Auto Save / Crash Recovery — defer the startup check until
+        # the event loop is running so the modal has a visible parent.
+        if self._controller.workspace.has_project:
+            QTimer.singleShot(
+                0,
+                lambda: self._controller.workspace.maybe_offer_recovery(
+                    self._window
+                ),
+            )
 
         logger.info("Magic Factory AI started")
         exit_code = self._app.exec()

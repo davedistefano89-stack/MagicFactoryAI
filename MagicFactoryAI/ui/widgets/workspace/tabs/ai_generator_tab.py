@@ -7,14 +7,20 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -25,7 +31,9 @@ from core.ai.models import AIRequest
 from engine.generator.progress_tracker import ProgressTracker
 from models.generation_task import GenerationTask
 from core.theme.colors import Colors
+from services.preset_manager import PresetManager
 from ui.widgets.page_header import PageHeader
+from ui.widgets.queue_panel import QueuePanel
 from ui.widgets.workspace.tabs.base_tab import WorkspaceTabBase
 from app.workers.ai_generation_worker import AIGenerationWorker
 from utils.paths import get_library_dir
@@ -116,6 +124,120 @@ class _BatchExecutionWorker(QObject):
         self.progress.emit(int(tracker.percentage))
 
 
+class _PresetsManagerDialog(QDialog):
+    """Rename, duplicate, delete and set-default operations on presets."""
+
+    def __init__(self, mgr: PresetManager, parent=None) -> None:
+        super().__init__(parent)
+        self._mgr = mgr
+        self.setWindowTitle("Manage Presets")
+        self.setMinimumSize(420, 360)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("Presets  (⭐ = default):"))
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        layout.addWidget(self._list, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        rename_btn = QPushButton("✏️ Rename")
+        rename_btn.setProperty("cssClass", "ghost")
+        rename_btn.clicked.connect(self._on_rename)
+
+        dup_btn = QPushButton("⧉ Duplicate")
+        dup_btn.setProperty("cssClass", "ghost")
+        dup_btn.clicked.connect(self._on_duplicate)
+
+        default_btn = QPushButton("⭐ Set Default")
+        default_btn.setProperty("cssClass", "ghost")
+        default_btn.clicked.connect(self._on_set_default)
+
+        del_btn = QPushButton("🗑 Delete")
+        del_btn.setProperty("cssClass", "danger")
+        del_btn.clicked.connect(self._on_delete)
+
+        btn_row.addWidget(rename_btn)
+        btn_row.addWidget(dup_btn)
+        btn_row.addWidget(default_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(del_btn)
+        layout.addLayout(btn_row)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self._populate()
+
+    def _populate(self) -> None:
+        self._list.clear()
+        default = self._mgr.get_default()
+        for name in self._mgr.get_sorted_names():
+            label = f"⭐  {name}" if name == default else f"    {name}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self._list.addItem(item)
+
+    def _selected_name(self):
+        items = self._list.selectedItems()
+        return items[0].data(Qt.ItemDataRole.UserRole) if items else None
+
+    def _on_rename(self) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Preset", "New name:", text=name
+        )
+        if ok and new_name.strip() and new_name.strip() != name:
+            self._mgr.rename(name, new_name.strip())
+            self._populate()
+
+    def _on_duplicate(self) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Duplicate Preset", "New preset name:", text=f"{name} Copy"
+        )
+        if ok and new_name.strip():
+            self._mgr.duplicate(name, new_name.strip())
+            self._populate()
+
+    def _on_set_default(self) -> None:
+        name = self._selected_name()
+        if name:
+            self._mgr.set_default(name)
+            self._populate()
+
+    def _on_delete(self) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+        if name == self._mgr.get_default():
+            QMessageBox.warning(
+                self, "Delete Preset", "Cannot delete the default preset."
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f"Delete preset '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._mgr.delete(name)
+            self._populate()
+
+
 class AIGeneratorTab(WorkspaceTabBase):
     """
     AI image generation workspace.
@@ -133,6 +255,9 @@ class AIGeneratorTab(WorkspaceTabBase):
     batch_requested = Signal(list)
 
     def _build_ui(self) -> None:
+
+        self._preset_mgr = PresetManager()
+        self._preset_mgr.ensure_default()
 
         self._layout.addWidget(
             PageHeader(
@@ -166,6 +291,35 @@ class AIGeneratorTab(WorkspaceTabBase):
 
         form = QFormLayout()
         form.setSpacing(12)
+
+        # -------------------------------------------------
+        # Preset selector
+        # -------------------------------------------------
+
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.setSpacing(8)
+
+        self._preset_combo = QComboBox()
+        self._preset_combo.setMinimumWidth(180)
+        self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(self._preset_combo, stretch=1)
+
+        _save_preset_btn = QPushButton("💾 Save Preset")
+        _save_preset_btn.setProperty("cssClass", "ghost")
+        _save_preset_btn.setFixedHeight(30)
+        _save_preset_btn.clicked.connect(self._on_save_preset)
+        preset_row.addWidget(_save_preset_btn)
+
+        _manage_preset_btn = QPushButton("⚙ Manage")
+        _manage_preset_btn.setProperty("cssClass", "ghost")
+        _manage_preset_btn.setFixedHeight(30)
+        _manage_preset_btn.clicked.connect(self._on_manage_presets)
+        preset_row.addWidget(_manage_preset_btn)
+
+        _preset_row_widget = QFrame()
+        _preset_row_widget.setLayout(preset_row)
+        form.addRow("Preset", _preset_row_widget)
 
         # -------------------------------------------------
         # Provider
@@ -375,6 +529,58 @@ class AIGeneratorTab(WorkspaceTabBase):
             self._notes,
         )
 
+        # -------------------------------------------------
+        # Steps
+        # -------------------------------------------------
+
+        self._steps = QSpinBox()
+        self._steps.setRange(1, 150)
+        self._steps.setValue(20)
+        form.addRow("Steps", self._steps)
+
+        # -------------------------------------------------
+        # Guidance Scale
+        # -------------------------------------------------
+
+        self._guidance = QDoubleSpinBox()
+        self._guidance.setRange(1.0, 20.0)
+        self._guidance.setSingleStep(0.5)
+        self._guidance.setDecimals(1)
+        self._guidance.setValue(7.5)
+        form.addRow("Guidance Scale", self._guidance)
+
+        # -------------------------------------------------
+        # Seed Mode
+        # -------------------------------------------------
+
+        self._seed_mode = QComboBox()
+        self._seed_mode.addItems(["Random", "Fixed"])
+        form.addRow("Seed Mode", self._seed_mode)
+
+        # -------------------------------------------------
+        # Negative Prompt
+        # -------------------------------------------------
+
+        self._neg_prompt = QLineEdit()
+        self._neg_prompt.setPlaceholderText("e.g. blurry, low quality, watermark…")
+        form.addRow("Negative Prompt", self._neg_prompt)
+
+        # -------------------------------------------------
+        # Prompt Prefix
+        # -------------------------------------------------
+
+        self._prompt_prefix = QLineEdit()
+        self._prompt_prefix.setPlaceholderText("Added before every prompt")
+        form.addRow("Prompt Prefix", self._prompt_prefix)
+
+        # -------------------------------------------------
+        # Prompt Suffix
+        # -------------------------------------------------
+
+        self._prompt_suffix = QLineEdit()
+        self._prompt_suffix.setPlaceholderText("Added after every prompt")
+        form.addRow("Prompt Suffix", self._prompt_suffix)
+
         layout.addLayout(form)
 
         # -------------------------------------------------
@@ -449,11 +655,27 @@ class AIGeneratorTab(WorkspaceTabBase):
             card,
         )
 
+        # Sprint: Batch Queue Manager PRO — dedicated queue panel
+        # integrated below the form. All generation requests now go
+        # through this queue (single and batch share the same path)
+        # so the user has unified visibility / control.
+        self._queue_panel = QueuePanel(self.controller, self)
+        self._queue_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self._layout.addWidget(self._queue_panel, stretch=1)
+
         self._layout.addStretch()
 
         # Worker/thread placeholders
         self._worker_thread: QThread | None = None
         self._worker: object | None = None
+
+        # Load presets into selector and apply the default
+        self._load_preset_selector()
+        # Trigger silently — combo already set to index 0 by _load_preset_selector
+        self._on_preset_changed(self._preset_combo.currentText())
 
     # ---------------------------------------------------------
     # Helpers
@@ -503,6 +725,12 @@ class AIGeneratorTab(WorkspaceTabBase):
             "seed": self._seed.value(),
             "count": self._count.value(),
             "notes": self._notes.toPlainText().strip(),
+            "steps": self._steps.value(),
+            "guidance_scale": self._guidance.value(),
+            "seed_mode": self._seed_mode.currentText().lower(),
+            "negative_prompt": self._neg_prompt.text().strip(),
+            "prompt_prefix": self._prompt_prefix.text().strip(),
+            "prompt_suffix": self._prompt_suffix.text().strip(),
         }
 
     def _set_busy(
@@ -517,6 +745,7 @@ class AIGeneratorTab(WorkspaceTabBase):
         self._cancel.setEnabled(busy)
 
         widgets = [
+            self._preset_combo,
             self._provider,
             self._model,
             self._category,
@@ -528,6 +757,12 @@ class AIGeneratorTab(WorkspaceTabBase):
             self._seed,
             self._count,
             self._notes,
+            self._steps,
+            self._guidance,
+            self._seed_mode,
+            self._neg_prompt,
+            self._prompt_prefix,
+            self._prompt_suffix,
         ]
 
         for widget in widgets:
@@ -591,27 +826,40 @@ class AIGeneratorTab(WorkspaceTabBase):
 
         request = self._collect_request()
 
-        self._set_busy(True)
-
-        self._update_progress(
-            5,
-            "Preparing AI generation...",
-        )
-
         # Ensure the request includes workspace context.
         request["project_id"] = self.workspace.project_id
         request["category_id"] = self.workspace.category_id
         request["prompt_id"] = None
 
-        if request["count"] > 1:
-            self._start_batch_generation(request)
-            return
+        # Sprint: Batch Queue Manager PRO — single source of truth.
+        # All jobs (count == 1 OR count > 1) are routed through the
+        # QueuePanel dispatcher. The queue panel owns its own progress
+        # UI; we keep ``self._set_busy`` on the form fields so the
+        # user cannot trigger duplicate jobs while one is queued.
+        self._set_busy(True)
+        self._update_progress(
+            5,
+            "Adding to queue...",
+        )
 
-        # Single-image generation uses legacy worker path.
         try:
-            self._start_single_generation(request)
+            self._queue_panel.enqueue_request(
+                request,
+                preset_name=self._preset_combo.currentText(),
+            )
+            self._update_progress(
+                10,
+                f"Queued {request['count']} job(s).",
+            )
         except Exception as exc:
             self._generation_failed(str(exc))
+            return
+
+        # Re-enable the form immediately — the queue panel drives
+        # the rest of the lifecycle and signals completion via
+        # ``_queue_panel.queue_finished_notify``.
+        self._set_busy(False)
+        self.workspace.workspace_refresh.emit()
 
     def _create_ai_request(self, request: dict) -> AIRequest:
         return AIRequest(
@@ -729,10 +977,27 @@ class AIGeneratorTab(WorkspaceTabBase):
         self._worker_thread = None
 
     def _on_cancel(self) -> None:
-        """Request cancellation of the running worker."""
-        if self._worker:
-            self._worker.cancel()
-            self._update_progress(self._progress.value(), "Cancellation requested...")
+        """Request cancellation of the running worker / queue item.
+
+        Sprint: All generation now flows through the QueuePanel, so
+        cancellation goes via ``BatchController.cancel_running``
+        which calls ``cancel()`` on the in-flight BatchGenerator.
+        """
+        try:
+            self.controller.batch_controller.cancel_running()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.controller.batch_controller.cancel_waiting()
+        except Exception:  # noqa: BLE001
+            pass
+        # Fallback: legacy inline worker.
+        if self._worker is not None and hasattr(self._worker, "cancel"):
+            try:
+                self._worker.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self._update_progress(self._progress.value(), "Cancellation requested...")
 
     # ---------------------------------------------------------
     # Refresh
@@ -745,3 +1010,84 @@ class AIGeneratorTab(WorkspaceTabBase):
         self._progress.setValue(0)
 
         self._status.setText("Ready")
+
+    # ---------------------------------------------------------
+    # Preset management
+    # ---------------------------------------------------------
+
+    def _load_preset_selector(self) -> None:
+        """Repopulate the preset combo from the manager."""
+        self._preset_combo.blockSignals(True)
+        current = self._preset_combo.currentText()
+        self._preset_combo.clear()
+        for name in self._preset_mgr.get_sorted_names():
+            self._preset_combo.addItem(name)
+        # Restore previous selection or fall back to default
+        idx = self._preset_combo.findText(current)
+        if idx < 0:
+            idx = self._preset_combo.findText(self._preset_mgr.get_default())
+        if idx >= 0:
+            self._preset_combo.setCurrentIndex(idx)
+        self._preset_combo.blockSignals(False)
+
+    def _on_preset_changed(self, name: str = "") -> None:
+        """Apply a preset's values to all form controls."""
+        if not name:
+            name = self._preset_combo.currentText()
+        data = self._preset_mgr.get(name)
+        if not data:
+            return
+        self._provider.setCurrentText(data.get("provider", "OpenAI"))
+        self._model.setCurrentText(data.get("model", "gpt-image-1"))
+        self._size.setCurrentText(data.get("size", "1024x1024"))
+        self._quality.setCurrentText(data.get("quality", "high"))
+        self._seed.setValue(int(data.get("seed", 0)))
+        self._steps.setValue(int(data.get("steps", 20)))
+        self._guidance.setValue(float(data.get("guidance_scale", 7.5)))
+        seed_mode = data.get("seed_mode", "Random").capitalize()
+        idx = self._seed_mode.findText(seed_mode)
+        if idx >= 0:
+            self._seed_mode.setCurrentIndex(idx)
+        self._neg_prompt.setText(data.get("negative_prompt", ""))
+        self._prompt_prefix.setText(data.get("prompt_prefix", ""))
+        self._prompt_suffix.setText(data.get("prompt_suffix", ""))
+
+    def _on_save_preset(self) -> None:
+        """Save current form values as a named preset."""
+        current_name = self._preset_combo.currentText()
+        name, ok = QInputDialog.getText(
+            self, "Save Preset", "Preset name:", text=current_name
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        data = {
+            "provider": self._provider.currentText(),
+            "model": self._model.currentText(),
+            "size": self._size.currentText(),
+            "quality": self._quality.currentText(),
+            "seed": self._seed.value(),
+            "seed_mode": self._seed_mode.currentText(),
+            "steps": self._steps.value(),
+            "guidance_scale": self._guidance.value(),
+            "negative_prompt": self._neg_prompt.text().strip(),
+            "prompt_prefix": self._prompt_prefix.text().strip(),
+            "prompt_suffix": self._prompt_suffix.text().strip(),
+        }
+        self._preset_mgr.save(name, data)
+        self.workspace.mark_dirty()
+        self._load_preset_selector()
+        # Select the freshly saved preset
+        idx = self._preset_combo.findText(name)
+        if idx >= 0:
+            self._preset_combo.blockSignals(True)
+            self._preset_combo.setCurrentIndex(idx)
+            self._preset_combo.blockSignals(False)
+
+    def _on_manage_presets(self) -> None:
+        """Open the Manage Presets dialog."""
+        dlg = _PresetsManagerDialog(self._preset_mgr, parent=self)
+        dlg.exec()
+        self.workspace.mark_dirty()
+        self._load_preset_selector()
+        self._on_preset_changed(self._preset_combo.currentText())

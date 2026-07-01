@@ -379,6 +379,39 @@ class AssetRepository:
         row = conn.execute(query, params).fetchone()
         return int(row["cnt"])
 
+    def get_page(
+        self,
+        limit: int,
+        offset: int,
+        project_id: Optional[int] = None,
+        category_id: Optional[int] = None,
+        status: Optional[AssetStatus] = None,
+    ) -> List[Asset]:
+        """Return one LIMIT/OFFSET window of assets (sprint: perf).
+
+        Same filter semantics as ``get_all``; returns assets ordered
+        by ``updated_at DESC``. No schema change — uses the existing
+        ``assets`` table.
+        """
+        conn = self._db.connect()
+        query = "SELECT * FROM assets WHERE 1=1"
+        params: list = []
+
+        if project_id is not None:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        if category_id is not None:
+            query += " AND category_id = ?"
+            params.append(category_id)
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status.value)
+
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+        rows = conn.execute(query, params).fetchall()
+        return [Asset.from_row(dict(r)) for r in rows]
+
     def count_by_status(self) -> dict[str, int]:
         conn = self._db.connect()
         rows = conn.execute(

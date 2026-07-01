@@ -105,3 +105,49 @@ class PromptController:
             return updated
 
         return None
+
+    # ── Sprint: Global Undo / Redo helpers ──────────────────────────────────
+    # Small closure-friendly helpers so undo / redo lambdas can call them.
+
+    def set_collections(self, prompt_id: int, collections: list[str]) -> bool:
+        """Update only the collections field of a prompt's tags string."""
+        prompt = self._app.prompts.get_by_id(prompt_id)
+        if prompt is None:
+            return False
+        from ui.widgets.prompt_collection_utils import (
+            get_prompt_collections,
+            set_prompt_collections,
+        )
+        current = get_prompt_collections(prompt)
+        if [c.lower() for c in current] == [c.lower() for c in collections]:
+            return True
+        set_prompt_collections(prompt, collections)
+        self._app.prompts.update(prompt)
+        return True
+
+    def save_prompt(
+        self,
+        prompt_id: int,
+        title: str,
+        content: str,
+        prompt_type: PromptType,
+        tags: str,
+    ) -> bool:
+        """Update the editable fields of an existing prompt."""
+        prompt = self._app.prompts.get_by_id(prompt_id)
+        if prompt is None:
+            return False
+        # No-op if nothing actually changed.
+        if (
+            prompt.title == title
+            and prompt.content == content
+            and prompt.prompt_type == prompt_type
+            and prompt.tags == tags
+        ):
+            return True
+        prompt.title = title
+        prompt.content = content
+        prompt.prompt_type = prompt_type
+        prompt.tags = tags
+        self._app.prompts.update(prompt)
+        return True

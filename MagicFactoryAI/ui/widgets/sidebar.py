@@ -74,12 +74,13 @@ class Sidebar(QFrame):
     NAV_ITEMS: List[SidebarItem] = [
         SidebarItem("dashboard", "Dashboard", "📊"),
         SidebarItem("new_project", "New Project", "✨"),
-        SidebarItem("workspace", "Workspace", "🗂"),
-        SidebarItem("categories", "Categories", "📁"),
-        SidebarItem("prompts", "Prompt Manager", "💬"),
-        SidebarItem("library", "Library", "🖼"),
-        SidebarItem("export", "Export", "📦"),
-        SidebarItem("settings", "Settings", "⚙"),
+        SidebarItem("project_dashboard", "Project Dashboard", "🎯"),
+        SidebarItem("workspace", "Area di lavoro", "🗂"),
+        SidebarItem("categories", "Categorie", "📁"),
+        SidebarItem("prompts", "Gestione prompt", "💬"),
+        SidebarItem("library", "Libreria", "🖼"),
+        SidebarItem("export", "Esporta", "📦"),
+        SidebarItem("settings", "Impostazioni", "⚙"),
     ]
 
     def __init__(self, width: int = 260, parent: QWidget | None = None) -> None:
@@ -110,7 +111,7 @@ class Sidebar(QFrame):
         """)
         layout.addWidget(brand)
 
-        subtitle = QLabel("Magic Colors Adventure")
+        subtitle = QLabel("Avventura a Colori Magici")
         subtitle.setStyleSheet(f"""
             font-size: 11px;
             color: {Colors.TEXT_MUTED};

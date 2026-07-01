@@ -27,7 +27,13 @@ from PySide6.QtWidgets import (
 )
 
 from models.asset import Asset
-from ui.widgets.tag_utils import collect_all_tags, get_tags, set_tags
+from ui.widgets.tag_utils import (
+    collect_all_tags,
+    get_collections,
+    get_tags,
+    set_collections,
+    set_tags,
+)
 
 _REMOVE_CHIP_STYLE = (
     "QPushButton { background-color: #334155; border: 1px solid #475569;"
@@ -83,6 +89,7 @@ class AssetInspectorDialog(QDialog):
         asset: Asset,
         controller,
         known_tags: Optional[List[str]] = None,
+        known_collections: Optional[List[str]] = None,
         on_tags_changed: Optional[Callable] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
@@ -90,6 +97,7 @@ class AssetInspectorDialog(QDialog):
         self._asset = asset
         self._controller = controller
         self._known_tags: List[str] = known_tags or []
+        self._known_collections: List[str] = known_collections or []
         self._on_tags_changed: Optional[Callable] = on_tags_changed
         self._zoom_factor: float = 1.0
         self._original_pixmap: Optional[QPixmap] = None
@@ -184,6 +192,7 @@ class AssetInspectorDialog(QDialog):
 
         layout.addWidget(self._build_metadata_group())
         layout.addWidget(self._build_tags_group())
+        layout.addWidget(self._build_collections_group())
         layout.addWidget(self._build_prompt_group())
         layout.addWidget(self._build_neg_prompt_group())
         layout.addWidget(self._build_technical_group())
@@ -360,8 +369,17 @@ class AssetInspectorDialog(QDialog):
         self._save_tags(current)
 
     def _save_tags(self, tags: List[str]) -> None:
-        set_tags(self._asset, tags)
-        self._controller.assets.update(self._asset)
+        asset = self._asset
+        old_tags = list(get_tags(asset))
+        new_tags = list(tags)
+        if [t.lower() for t in old_tags] == [t.lower() for t in new_tags]:
+            set_tags(asset, new_tags)
+            self._controller.assets.update(asset)
+            self._refresh_tags_ui()
+            return
+        set_tags(asset, new_tags)
+        self._controller.assets.update(asset)
+        self._record_asset_tags(asset, old_tags, new_tags)
         self._refresh_tags_ui()
         if self._on_tags_changed:
             self._on_tags_changed()
@@ -461,8 +479,187 @@ class AssetInspectorDialog(QDialog):
         self._tech_height.setText(f"{asset.height} px" if asset.height else "—")
 
         self._refresh_tags_ui()
+        self._refresh_collections_ui()
+
+    # ── Sprint: Global Undo / Redo PRO #1 recorders ──────────────────────────
+
+    def _record_asset_tags(
+        self,
+        asset: Asset,
+        old_tags: List[str],
+        new_tags: List[str],
+    ) -> None:
+        manager = getattr(self._controller, "undo_manager", None)
+        if manager is None:
+            return
+        aid = asset.id
+        ctrl = self._controller.assets
+        old_snap = list(old_tags)
+        new_snap = list(new_tags)
+        display = asset.name or str(aid)
+
+        def _undo() -> None:
+            try:
+                inst = ctrl.get_by_id(aid)
+                if inst is None:
+                    return
+                set_tags(inst, list(old_snap))
+                ctrl.update(inst)
+            except Exception:
+                pass
+
+        def _redo() -> None:
+            try:
+                inst = ctrl.get_by_id(aid)
+                if inst is None:
+                    return
+                set_tags(inst, list(new_snap))
+                ctrl.update(inst)
+            except Exception:
+                pass
+
+        manager.record(
+            f"Edit Tags ({len(old_snap)}->{len(new_snap)})",
+            undo=_undo,
+            redo=_redo,
+            context=display,
+        )
+
+    def _record_asset_collections(
+        self,
+        asset: Asset,
+        old_cols: List[str],
+        new_cols: List[str],
+    ) -> None:
+        manager = getattr(self._controller, "undo_manager", None)
+        if manager is None:
+            return
+        aid = asset.id
+        ctrl = self._controller.assets
+        old_snap = list(old_cols)
+        new_snap = list(new_cols)
+        display = asset.name or str(aid)
+
+        def _undo() -> None:
+            try:
+                inst = ctrl.get_by_id(aid)
+                if inst is None:
+                    return
+                set_collections(inst, list(old_snap))
+                ctrl.update(inst)
+            except Exception:
+                pass
+
+        def _redo() -> None:
+            try:
+                inst = ctrl.get_by_id(aid)
+                if inst is None:
+                    return
+                set_collections(inst, list(new_snap))
+                ctrl.update(inst)
+            except Exception:
+                pass
+
+        manager.record(
+            "Edit Collections",
+            undo=_undo,
+            redo=_redo,
+            context=display,
+        )
 
     @staticmethod
     def _copy_text(text: str) -> None:
         if text.strip():
             QGuiApplication.clipboard().setText(text)
+
+    # ── Collections group ─────────────────────────────────────────────────────
+
+    def _build_collections_group(self) -> QGroupBox:
+        box = QGroupBox("Collections")
+        layout = QVBoxLayout(box)
+        layout.setSpacing(8)
+
+        self._cols_scroll = QScrollArea()
+        self._cols_scroll.setWidgetResizable(True)
+        self._cols_scroll.setFixedHeight(46)
+        self._cols_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._cols_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._cols_chips_widget = QWidget()
+        self._cols_chips_layout = QHBoxLayout(self._cols_chips_widget)
+        self._cols_chips_layout.setContentsMargins(0, 4, 0, 4)
+        self._cols_chips_layout.setSpacing(6)
+        self._cols_chips_layout.addStretch()
+        self._cols_scroll.setWidget(self._cols_chips_widget)
+        layout.addWidget(self._cols_scroll)
+
+        add_btn = QPushButton("+ Add to Collection")
+        add_btn.setProperty("cssClass", "ghost")
+        add_btn.setFixedHeight(28)
+        add_btn.clicked.connect(self._on_add_to_collection)
+        layout.addWidget(add_btn)
+
+        return box
+
+    def _refresh_collections_ui(self) -> None:
+        while self._cols_chips_layout.count() > 1:
+            item = self._cols_chips_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for col in get_collections(self._asset):
+            chip = QPushButton(f"{col}  ×")
+            chip.setFixedHeight(26)
+            chip.setStyleSheet(_REMOVE_CHIP_STYLE)
+            chip.clicked.connect(lambda _, c=col: self._on_remove_from_collection(c))
+            self._cols_chips_layout.insertWidget(
+                self._cols_chips_layout.count() - 1, chip
+            )
+
+    def _on_add_to_collection(self) -> None:
+        try:
+            all_assets = self._controller.assets.get_all()
+            from ui.widgets.tag_utils import collect_all_collections
+            known = collect_all_collections(all_assets)
+        except Exception:
+            known = list(self._known_collections)
+
+        extra = self._known_collections
+        for c in extra:
+            if c.lower() not in {x.lower() for x in known}:
+                known.append(c)
+        known.sort(key=str.lower)
+
+        dlg = _TagInputDialog(known, parent=self)
+        dlg.setWindowTitle("Add to Collection")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = dlg.tag_text()
+        if not name:
+            return
+
+        current = get_collections(self._asset)
+        if name.lower() in {c.lower() for c in current}:
+            return
+        current.append(name)
+        self._save_collections(current)
+
+    def _on_remove_from_collection(self, col: str) -> None:
+        current = [c for c in get_collections(self._asset) if c != col]
+        self._save_collections(current)
+
+    def _save_collections(self, cols: List[str]) -> None:
+        asset = self._asset
+        old_cols = list(get_collections(asset))
+        new_cols = list(cols)
+        if [c.lower() for c in old_cols] == [c.lower() for c in new_cols]:
+            set_collections(asset, new_cols)
+            self._controller.assets.update(asset)
+            self._refresh_collections_ui()
+            return
+        set_collections(asset, new_cols)
+        self._controller.assets.update(asset)
+        self._record_asset_collections(asset, old_cols, new_cols)
+        self._refresh_collections_ui()
+        if self._on_tags_changed:
+            self._on_tags_changed()
