@@ -1,4 +1,4 @@
-"""Library tab within the project workspace.
+﻿"""Library tab within the project workspace.
 
 Sprint: Performance Optimizer #2.
 
@@ -372,17 +372,9 @@ class LibraryTab(WorkspaceTabBase):
     # ── Apply filters (server-side where possible) ──────────────────────────
 
     def _apply_filters(self, initial: bool = False) -> None:
-        """Apply current filter state and re-fetch from the server.
-
-        When ``initial`` is True (most cases: filter chips, search
-        debounce), we re-count and start streaming from offset 0.
-        Otherwise (incremental scroll), we just append more rows.
-        """
-        # Build the filter kwargs and fetch from the SQL repository.
         if not self.workspace.project_id:
             self._all_assets = []
             self._assets = []
-            self._server_total = 0
             self._server_loaded = 0
             self._table.setRowCount(0)
             self._clear_all_cell_widgets()
@@ -632,6 +624,7 @@ class LibraryTab(WorkspaceTabBase):
             asset = self._assets[row]
         except IndexError:
             return
+
 
         # Thumb column (col 0): placeholder until background load emits.
         thumb_cell_widget = QWidget()
@@ -933,7 +926,7 @@ class LibraryTab(WorkspaceTabBase):
     def _change_asset_status(
         self, asset_id: int, new_status: AssetStatus, label: str
     ) -> None:
-        asset = self._app.assets.get_by_id(asset_id)
+        asset = self.controller.assets.get_by_id(asset_id)
         if asset is None:
             return
         old_status = asset.status
@@ -952,7 +945,6 @@ class LibraryTab(WorkspaceTabBase):
     ) -> None:
         manager = getattr(self.controller, "undo_manager", None)
         if manager is None:
-            self.workspace.mark_dirty()
             self.workspace.workspace_refresh.emit()
             return
         ctrl = self._asset_ctrl
@@ -962,7 +954,6 @@ class LibraryTab(WorkspaceTabBase):
             redo=lambda: ctrl.set_status(asset_id, new_status),
             context=display_name,
         )
-        self.workspace.mark_dirty()
         self.workspace.workspace_refresh.emit()
 
     def _on_delete(self, asset_id: int, name: str) -> None:
@@ -972,10 +963,6 @@ class LibraryTab(WorkspaceTabBase):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._asset_ctrl.delete_asset(asset_id)
-            try:
-                self.workspace.mark_dirty()
-            except Exception:
-                pass
             self.workspace.workspace_refresh.emit()
 
     # ── Sidebar / collection management (largely preserved) ────────────────
@@ -1235,7 +1222,6 @@ class LibraryTab(WorkspaceTabBase):
                 added_name=name,
             )
 
-        self.workspace.mark_dirty()
         self.workspace.workspace_refresh.emit()
 
     def _record_collection_bulk_assign(

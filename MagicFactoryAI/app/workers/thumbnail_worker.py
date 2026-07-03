@@ -138,6 +138,10 @@ class ThumbnailWorker(QObject):
         try:
             image = QImage(str(path))
         except Exception as exc:  # noqa: BLE001
+            # Production observability: emit a full traceback so a
+            # decode failure surfaces in the logs instead of being
+            # silently folded into a `thumbnail_failed` signal.
+            logger.exception("decode failed for asset %s: %s", asset_id, exc)
             self._release(cache_key)
             self.thumbnail_failed.emit(asset_id, cache_key, str(exc))
             return

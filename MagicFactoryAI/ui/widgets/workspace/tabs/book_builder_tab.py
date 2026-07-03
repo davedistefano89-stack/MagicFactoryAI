@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
 from app.controllers.asset_controller import AssetController
 from core.theme.colors import Colors
 from models.asset import Asset
-import services.recovery_manager as _recovery
 from ui.widgets.workspace.tabs.base_tab import WorkspaceTabBase
 
 
@@ -260,6 +259,16 @@ class BookBuilderTab(WorkspaceTabBase):
 
         # Single 60-second auto-save timer lives in WorkspaceController so all
         # tabs participate in one global cycle.
+
+        # Wire this tab's draft-capture and restore callbacks so the workspace
+        # auto-save timer and crash-recovery flow can snapshot and replay the
+        # current book + cover state.
+        self.workspace.register_recovery_section(
+            "book", self._collect_book_recovery_draft
+        )
+        self.workspace.register_recovery_apply(
+            "book", self._apply_book_recovery_draft
+        )
 
     # ── Book Properties ──────────────────────────────────────────────────────
 
@@ -1153,10 +1162,20 @@ class BookBuilderTab(WorkspaceTabBase):
         )
         header.addWidget(self._estimated_size_label)
 
-        for label in ("New Book", "Clear Book", "Auto Number Pages"):
-            button = QPushButton(label)
-            button.setProperty("cssClass", "ghost")
-            header.addWidget(button)
+        _btn_new = QPushButton("New Book")
+        _btn_new.setProperty("cssClass", "ghost")
+        _btn_new.clicked.connect(self._on_new_book)
+        header.addWidget(_btn_new)
+
+        _btn_clear = QPushButton("Clear Book")
+        _btn_clear.setProperty("cssClass", "ghost")
+        _btn_clear.clicked.connect(self._on_clear_book)
+        header.addWidget(_btn_clear)
+
+        _btn_autonumber = QPushButton("Auto Number Pages")
+        _btn_autonumber.setProperty("cssClass", "ghost")
+        _btn_autonumber.clicked.connect(self._on_auto_number_pages)
+        header.addWidget(_btn_autonumber)
 
         layout.addLayout(header)
 
@@ -1431,6 +1450,49 @@ class BookBuilderTab(WorkspaceTabBase):
     def _renumber_pages(self) -> None:
         for index, page in enumerate(self._book_pages, start=1):
             page.page_number = index
+
+    # ── Book toolbar button handlers ──────────────────────────────────────────
+
+    def _on_new_book(self) -> None:
+        """Clear the current book and start a fresh one."""
+        if self._book_pages:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                "New Book",
+                "Create a new book? All current pages will be cleared.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._book_pages = []
+        self._render_book_pages()
+        self._mark_dirty()
+
+    def _on_clear_book(self) -> None:
+        """Remove all pages from the current book."""
+        if not self._book_pages:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Clear Book",
+            "Remove all pages from the book?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._book_pages = []
+        self._render_book_pages()
+        self._mark_dirty()
+
+    def _on_auto_number_pages(self) -> None:
+        """Sequentially renumber all pages starting from 1."""
+        if not self._book_pages:
+            return
+        self._renumber_pages()
+        self._render_book_pages()
+        self._mark_dirty()
 
     # ── Sprint: Auto Save / Crash Recovery hooks ──────────────────────────────
 

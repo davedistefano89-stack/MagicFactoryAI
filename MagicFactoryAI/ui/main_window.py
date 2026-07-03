@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, Union
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -137,6 +137,18 @@ class MainWindow(QMainWindow):
         nav_map = {item.id: idx for idx, item in enumerate(Sidebar.NAV_ITEMS)}
         self._nav_index_map = nav_map
         self._index_nav_map = {v: k for k, v in nav_map.items()}
+
+        # Edit menu — exposes Undo/Redo for users who don't know the shortcuts.
+        # The QAction text carries the key hint display only; the actual key
+        # bindings live in _install_undo_shortcuts() via QShortcut so there
+        # is no conflict or duplication.
+        edit_menu = self.menuBar().addMenu("&Edit")
+        undo_action = QAction("&Undo\tCtrl+Z", self)
+        undo_action.triggered.connect(self._handle_undo_shortcut)
+        edit_menu.addAction(undo_action)
+        redo_action = QAction("&Redo\tCtrl+Shift+Z", self)
+        redo_action.triggered.connect(self._handle_redo_shortcut)
+        edit_menu.addAction(redo_action)
 
     def _connect_signals(self) -> None:
         self._sidebar.navigation_changed.connect(self._on_navigate)

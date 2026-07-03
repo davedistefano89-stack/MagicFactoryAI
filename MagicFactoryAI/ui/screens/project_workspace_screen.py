@@ -19,7 +19,6 @@ from ui.widgets.workspace.tabs import (
     BookBuilderTab,
     CategoriesTab,
     ExportTab,
-    GeneratorTab,
     LibraryTab,
     PromptsTab,
     ReviewTab,
