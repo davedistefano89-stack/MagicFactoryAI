@@ -1,0 +1,266 @@
+// =============================================================================
+// Magic Colors · features/coloring/coloring_screen.dart
+// =============================================================================
+//
+// The /coloring/:id destination. Owns ONE [ColoringController] for the
+// duration of the screen (ChangeNotifierProvider.scoped). When the
+// screen pops, the controller's `dispose()` flushes any pending save.
+//
+// LAYOUT
+// ------
+//   ┌────────────────────────────────────────┐
+//   │   ColoringTopBar (back, title, status) │
+//   ├────────────────────────────────────────┤
+//   │                                        │
+//   │       ColoringCanvas (expanded)        │
+//   │                                        │
+//   ├────────────────────────────────────────┤
+//   │   ColoringBrushPicker (chips + size)   │
+//   │   ColoringPalette   (6×4 grid)         │
+//   │   ColoringToolbar  (undo / redo / !!)  │
+//   └────────────────────────────────────────┘
+//
+// Back behaviour: force-flush the controller, then pop the route. If
+// there's no route to pop (deep-link cold start), we goWorlds so the
+// child is never stranded.
+// =============================================================================
+
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart' show GoRouter;
+import 'package:provider/provider.dart';
+
+import 'package:magic_colors/core/routing/app_router.dart' show GoRouterContextX;
+import 'package:magic_colors/core/services/sound_service.dart';
+import 'package:magic_colors/core/services/storage_service.dart';
+import 'package:magic_colors/core/state/settings_state.dart';
+import 'package:magic_colors/core/widgets/animated_background.dart';
+import 'package:magic_colors/core/theme/app_gradients.dart';
+
+import 'coloring_controller.dart';
+import 'state/view_transform_controller.dart';
+import 'widgets/coloring_brush_picker.dart';
+import 'widgets/coloring_canvas.dart';
+import 'widgets/coloring_palette.dart';
+import 'widgets/coloring_toolbar.dart';
+import 'widgets/coloring_top_bar.dart';
+
+
+// ── Catalog of starter drawings keyed by the :id URL param. ────────────
+
+/// Small lookup so WorldDetailScreen's `context.goColoring(_kDefaultDrawingId)`
+/// resolves to a sensible starting world + glyph when the index is not
+/// persisted yet.
+class _StarterDrawing {
+  const _StarterDrawing(this.worldId, this.templateGlyph, this.title);
+  final String worldId;
+  final String templateGlyph;
+  final String title;
+}
+
+const Map<String, _StarterDrawing> _kStarterDrawings = <String, _StarterDrawing>{
+  'draw-now': _StarterDrawing('world_default', '🦄', 'Untitled drawing'),
+  'unicorn_default': _StarterDrawing(
+    'unicorn_valley',
+    '🦄',
+    'Unicorn Valley',
+  ),
+  'forest_default': _StarterDrawing('animal_forest', '🦒', 'Animal Forest'),
+  'dino_default': _StarterDrawing('dinosaur_island', '🦖', 'Dinosaur Island'),
+  'dragon_default': _StarterDrawing('dragon_mountain', '🐉', 'Dragon Mountain'),
+  'mermaid_default': _StarterDrawing('mermaid_ocean', '🧜', 'Mermaid Ocean'),
+  'castle_default': _StarterDrawing(
+    'princess_kingdom',
+    '👑',
+    'Princess Kingdom',
+  ),
+  'space_default': _StarterDrawing('space_planet', '🚀', 'Space Planet'),
+};
+
+_StarterDrawing _resolveStarter(String drawingId) {
+  return _kStarterDrawings[drawingId] ??
+      const _StarterDrawing(
+        'unknown',
+        '',
+        'Untitled drawing',
+      );
+}
+
+
+// =============================================================================
+//  ColoringScreen.
+// =============================================================================
+
+class ColoringScreen extends StatelessWidget {
+  const ColoringScreen({
+    super.key,
+    this.drawingId = 'draw-now',
+  });
+
+  /// URL path parameter injected by the AppRouter. Defaults to the
+  /// hardcoded "draw-now" sentinel so a deep-link that misses the
+  /// parameter still lands somewhere drawable.
+  final String drawingId;
+
+  @override
+  Widget build(BuildContext context) {
+    final StorageService storage = context.read<StorageService>();
+    final SoundService sound = context.read<SoundService>();
+
+    final _StarterDrawing starter = _resolveStarter(drawingId);
+
+    return ChangeNotifierProvider<ViewTransformController>(
+      // M2.1 — owns the canvas view-matrix state (pinch zoom + 2-finger
+      // pan). Provided BEFORE ColoringController so the canvas widget
+      // finds it in the tree on first paint without missing a frame.
+      create: (_) => ViewTransformController(),
+      child: ChangeNotifierProvider<ColoringController>(
+        create: (_) => ColoringController(
+          box: storage.drawingsBox,
+          sound: sound,
+          drawingId: drawingId,
+          worldId: starter.worldId,
+          templateGlyph: starter.templateGlyph,
+          drawingName: starter.title,
+        ),
+        child: const _ColoringScreenBody(),
+      ),
+    );
+  }
+}
+
+
+// =============================================================================
+//  _ColoringScreenBody — lays out chrome around the canvas.
+// =============================================================================
+
+class _ColoringScreenBody extends StatelessWidget {
+  const _ColoringScreenBody();
+
+  void _onBack(BuildContext context) {
+    final ColoringController controller = context.read<ColoringController>();
+    controller.forceSave();
+
+    // If we have something to pop, pop. Otherwise deep-link started the
+    // screen — drop the child into the Worlds tab so they don't get
+    // stranded on a half-drawn canvas.
+    final GoRouter router = GoRouter.of(context);
+    if (router.canPop()) {
+      router.pop();
+      return;
+    }
+    context.goWorlds();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBackground(
+      gradient: AppGradients.skyDefault,
+      child: Consumer<ColoringController>(
+        builder: (BuildContext context, ColoringController c, Widget? _) {
+          return SafeArea(
+            // bottom: true so the dock never collides with the iOS
+            // home indicator or Android gesture nav bar.
+            bottom: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.max,
+              children: <Widget>[
+                _topBar(context, c),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12.0,
+                      vertical: 4.0,
+                    ),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFAFBFF),
+                        borderRadius: BorderRadius.circular(28.0),
+                        boxShadow: const <BoxShadow>[
+                          BoxShadow(
+                            color: Color(0x33000000),
+                            blurRadius: 16,
+                            offset: Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(28.0),
+                        child: ColoringCanvas(
+                          controller: c,
+                          color: c.selectedColor,
+                          isDarkSurface: false,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                _bottomDock(context, c),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _topBar(BuildContext context, ColoringController controller) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8.0, 4.0, 12.0, 4.0),
+      child: ColoringTopBar(
+        controller: controller,
+        onBack: () => _onBack(context),
+      ),
+    );
+  }
+
+  Widget _bottomDock(BuildContext context, ColoringController controller) {
+    return Consumer<SettingsState>(
+      builder: (BuildContext context, SettingsState settings, Widget? _) {
+        return Padding(
+          // Top-room 4 dp gives the card breathing space off the
+          // canvas frame; bottom = 8 dp visual padding (SafeArea already
+          // injected the system gesture inset).
+          padding: const EdgeInsets.fromLTRB(12.0, 4.0, 12.0, 8.0),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xFFFAFBFF).withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(28.0),
+              boxShadow: const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x33000000),
+                  blurRadius: 16,
+                  offset: Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  ColoringBrushPicker(controller: controller),
+                  const SizedBox(height: 10.0),
+                  ColoringPalette(controller: controller),
+                  const SizedBox(height: 10.0),
+                  ColoringToolbar(controller: controller),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+
+// =============================================================================
+//  Notes.
+// =============================================================================
+//
+// The default BrushType for a fresh canvas is round (BrushType.values[0]).
+// The starter canvas pre-selects the magenta swatch at index 8 of
+// [PaletteCatalog.colors]. ColorSwatchGrid applies the selection ring
+// immediately so the user sees their brush before the first stroke.

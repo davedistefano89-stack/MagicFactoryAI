@@ -62,6 +62,7 @@ import 'data/palette_catalog.dart';
 import 'domain/drawing.dart';
 import 'domain/drawing_stroke.dart';
 import 'domain/enums.dart';
+import 'painting/stroke_picture_cache.dart';
 
 
 // ── Tuning constants ─────────────────────────────────────────────────────
@@ -163,6 +164,12 @@ class ColoringController extends ChangeNotifier {
   /// emission across the auto-save debounce window (otherwise a 30-s
   /// painting would print a reward every 2 seconds).
   bool _rewardGrantedThisSession = false;
+
+  /// M2.1 — pre-baked Pictures of committed strokes, keyed by stroke.id.
+  /// Owned by the controller so undo/redo/clear lifecycle hooks stay
+  /// in one place. Lazy: a stroke's picture is recorded the first time
+  /// the painter asks for it, then reused on every subsequent frame.
+  final StrokePictureCache pictureCache = StrokePictureCache();
 
   // ── Public read model ─────────────────────────────────────────────────
 
@@ -306,6 +313,7 @@ class ColoringController extends ChangeNotifier {
   void undo() {
     if (_strokes.isEmpty) return;
     final DrawingStroke popped = _strokes.removeLast();
+    pictureCache.drop(popped.id);
     if (_redoStack.length >= _kMaxRedoStackDepth) {
       _redoStack.removeAt(0); // bound memory
     }
@@ -333,6 +341,7 @@ class ColoringController extends ChangeNotifier {
     if (_strokes.isEmpty && _redoStack.isEmpty) return;
     _strokes.clear();
     _redoStack.clear();
+    pictureCache.clear();
     _isDirty = true;
     _scheduleAutoSave();
     unawaited(HapticFeedback.mediumImpact());
@@ -437,6 +446,7 @@ class ColoringController extends ChangeNotifier {
     forceSave();
     _saveTimer?.cancel();
     _activeStrokeNotifier.dispose();
+    pictureCache.clear();
     super.dispose();
   }
 }
