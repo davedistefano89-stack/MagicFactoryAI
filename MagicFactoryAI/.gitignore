@@ -20,6 +20,12 @@ env/
 data/
 logs/*.log
 
+# ── M1 (Magic Colors) — whitelist the shared-keys registry directory.
+# `magic_colors/lib/core/data/` holds Hive-key constants and other
+# shared data definitions (NOT runtime data). Every other `data/`
+# anywhere in the tree remains ignored per the rule above.
+!magic_colors/lib/core/data/
+
 # OS
 .DS_Store
 Thumbs.db
