@@ -4,40 +4,39 @@
 //
 // The single ChangeNotifier that holds the active canvas state for one
 // drawing session. Scoped per-screen via `ChangeNotifierProvider(create:)`
-// so each open drawing has its own controller — there is no global
-// canvas state.
+// so each open drawing has its own controller.
 //
-// STATE MACHINE
-// -------------
-//   • `_drawing`       — top-level drawing metadata (id, name, worldId…)
-//   • `_strokes`       — append-only list of DrawingStroke; canvas's
-//                        committed state. Mutations are O(1):
-//                          - endStroke(): append
-//                          - undo(): pop + push to _redoStack
-//                          - redo(): pop _redoStack + push
-//                          - clear(): empty the list (redoStack NOT touched)
-//   • `_redoStack`     — DrawingStrokes that were popped by undo(). Cleared
-//                        on any new stroke (so a user can't undo into a
-//                        branch and then draw another stroke — that's the
-//                        standard editor mental model).
-//   • `_activeStrokeNotifier` — ValueNotifier<DrawingStroke?> for the
-//                        in-progress stroke while the user's finger is
-//                        down. Passed to `CustomPaint(repaint:)` so the
-//                        canvas repaints at 60 fps WITHOUT recreating the
-//                        outer widget tree.
+// M2.2 STATE MACHINE
+// -----------------
+//   • _commands        — append-only List<PaintCommand> (sealed union:
+//                        DrawStroke | FillRegion). This is the single
+//                        redo-stack source for M2+. The legacy
+//                        `_strokes` field is removed; migration is
+//                        applied on read by `Drawing.hydrate()`.
+//   • _redoStack       — commands popped off `_commands` by undo().
+//                        Cleared on every new commit (standard editor
+//                        mental model).
+//   • _activeStrokeNotifier    — ValueNotifier<PaintCommand?> for the
+//                                in-progress stroke while the user's
+//                                finger is down. Fill-region taps
+//                                commit synchronously (no drag
+//                                accumulation), so this only ever holds
+//                                DrawStroke commands at runtime.
+//   • fillAnimator     — Drives the 240 ms fade-in for newly-committed
+//                        FillRegion commands. A small Ticker that ticks
+//                        at 60 fps while any region is mid-fade.
 //
 // REACTIVITY SCOPE
 // ----------------
-//   • Brush colour / size / type changes → notifyListeners (toolbar rebuilds)
-//   • `_strokes` / `_redoStack` changes → notifyListeners (canvas rebuilds)
-//   • `_activeStrokeNotifier.value` changes → CustomPaint repaint only,
-//     no widget rebuild.
+//   • Brush colour / size / type changes → notifyListeners (toolbar rebuilds).
+//   • Commands added / undone → notifyListeners (canvas rebuilds).
+//   • _activeStrokeNotifier.value changes → CustomPaint repaint only.
+//   • FillAnimator fade ticks → canvas rebuilds via a ListenableBuilder.
 //
 // PERSISTENCE
-// -----------
-//   • `_saveTimer` — debounce 2 s after the last stroke ends; flushed on
-//     `forceSave()`. Always written through [ColoringRepository.save]
-//     so the wired observable stays consistent.
+// ----------
+//   • _saveTimer — debounce 2 s after the last commit; flushed on
+//     forceSave(). Writes through [ColoringRepository.save].
 // =============================================================================
 
 import 'dart:async';
@@ -46,6 +45,7 @@ import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show Color;
+import 'package:flutter/scheduler.dart' show TickerProvider;
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import 'package:hive/hive.dart' show Box;
@@ -62,18 +62,16 @@ import 'data/palette_catalog.dart';
 import 'domain/drawing.dart';
 import 'domain/drawing_stroke.dart';
 import 'domain/enums.dart';
+import 'domain/fill_region.dart' show newFillRegionId;
+import 'domain/paint_command.dart';
+import 'fill/scanline_filler.dart';
+import 'fill/fill_animator.dart';
 import 'painting/stroke_picture_cache.dart';
 
 
 // ── Tuning constants ─────────────────────────────────────────────────────
 
-/// Debounce window for the auto-save. Tuned for a 4-year-old: plenty
-/// long enough to swallow a 5-stroke flourish as one disk write, plenty
-/// short enough that a swipe-out-without-saving loses at most ~2 s.
 const Duration _kAutoSaveDebounce = Duration(seconds: 2);
-
-/// Maximum strokes held in the redo stack. Bound this so a brain-dead
-/// "undo spam" on a 4-year-old's tablet doesn't run the app out of RAM.
 const int _kMaxRedoStackDepth = 50;
 
 
@@ -87,24 +85,27 @@ class ColoringController extends ChangeNotifier {
     required this.worldId,
     required this.templateGlyph,
     required this.drawingName,
+    required this.vsync,
     this.player,
-  })  : _drawing = ColoringRepository.findById(box, drawingId) ??
-            Drawing.fresh(
+  })  : _drawing = (ColoringRepository.findById(box, drawingId)
+            ?? Drawing.fresh(
               id: drawingId,
               worldId: worldId,
               templateGlyph: templateGlyph,
               name: drawingName,
               paletteRevision: PaletteCatalog.revision,
-            ),
-        // Seed the live stroke list from the already-resolved drawing —
-        // a second repo call would just touch the same box entry.
-        _strokes = <DrawingStroke>[
-          ...(ColoringRepository.findById(box, drawingId)?.strokes ??
-              const <DrawingStroke>[]),
+            ))
+            .hydrate(),
+        _commands = <PaintCommand>[
+          ...(ColoringRepository.findById(box, drawingId)
+                  ?.hydrate()
+                  .effectiveCommands ??
+              const <PaintCommand>[]),
         ],
         _name = drawingName,
         _activeStrokeNotifier =
-            ValueNotifier<DrawingStroke?>(null);
+            ValueNotifier<PaintCommand?>(null),
+        fillAnimator = FillAnimator(vsync: vsync);
 
   final Box<dynamic> box;
   final SoundService sound;
@@ -112,20 +113,20 @@ class ColoringController extends ChangeNotifier {
   final String worldId;
   final String templateGlyph;
   final String drawingName;
+  final TickerProvider vsync;
 
-  /// The current drawing metadata + committed strokes (snapshot).
+  /// Current drawing metadata + committed commands (snapshot).
   Drawing _drawing;
 
-  /// The append-only stroke list. The canonical state of the canvas.
-  final List<DrawingStroke> _strokes;
+  /// Append-only command list — the canonical canvas state.
+  final List<PaintCommand> _commands;
 
-  /// Strokes popped off `_strokes` by undo() — popped back on redo().
-  /// Cleared on every new stroke.
-  final List<DrawingStroke> _redoStack = <DrawingStroke>[];
+  /// Commands popped off _commands by undo().
+  final List<PaintCommand> _redoStack = <PaintCommand>[];
 
-  /// Live "I'm currently painting" stroke. Repaints the canvas at 60 fps
-  /// via `CustomPaint(repaint: this)` without rebuilding the widget tree.
-  final ValueNotifier<DrawingStroke?> _activeStrokeNotifier;
+  /// Live in-progress command (only DrawStroke at runtime; fill
+  /// commands commit synchronously on tap).
+  final ValueNotifier<PaintCommand?> _activeStrokeNotifier;
 
   /// Brush state — drives toolbar + crosshair preview.
   Color _selectedColor =
@@ -133,136 +134,187 @@ class ColoringController extends ChangeNotifier {
   double _brushSize = PaletteCatalog.defaultBrushSize;
   BrushType _brushType = BrushType
       .values[PaletteCatalog.defaultBrushTypeIndex.clamp(0, BrushType.values.length - 1)];
-  // Non-final: renameDrawing() must rewrite this on every tap-to-edit.
   String _name; // initialised in the constructor initializer list
 
-  /// Debounced disk write.
   Timer? _saveTimer;
   bool _isDirty = false;
 
-  /// Optional PlayerState. When wired (the parent screen passes a real
-  /// instance after M1), the controller routes a drawing-completion
-  /// reward through [RewardEngine] the first time the in-progress
-  /// drawing becomes eligible. `null` during foundation wiring and in
-  /// tests — never throws, never double-grants.
   final PlayerState? player;
 
-  /// Wall-clock of the first stroke in this session. `null` before any
-  /// paint. Driver of the elapsed-time gate inside
-  /// [RewardEngine.isCompletionEligible].
+  /// Fade-in driver for newly-committed FillRegion commands.
+  final FillAnimator fillAnimator;
+
   DateTime? _sessionStart;
-
-  /// Distinct brush colour values (ARGB int) seen across this session.
-  /// Inserted in [beginStroke] from the currently-selected colour.
   final Set<int> _usedColorsThisSession = <int>{};
-
-  /// Committed strokes this session. Reset whenever the screen opens a
-  /// fresh drawing.
   int _strokeCountThisSession = 0;
-
-  /// True once a completion reward has been granted. Prevents repeat
-  /// emission across the auto-save debounce window (otherwise a 30-s
-  /// painting would print a reward every 2 seconds).
   bool _rewardGrantedThisSession = false;
 
-  /// M2.1 — pre-baked Pictures of committed strokes, keyed by stroke.id.
-  /// Owned by the controller so undo/redo/clear lifecycle hooks stay
-  /// in one place. Lazy: a stroke's picture is recorded the first time
-  /// the painter asks for it, then reused on every subsequent frame.
+  /// M2.1 — pre-baked Pictures of committed DrawStrokes. FillRegion
+  /// commands paint live (row-by-row) so they don't enter this cache.
   final StrokePictureCache pictureCache = StrokePictureCache();
+
 
   // ── Public read model ─────────────────────────────────────────────────
 
   Drawing get drawing => _drawing;
-  List<DrawingStroke> get strokes => List<DrawingStroke>.unmodifiable(_strokes);
-  int get strokeCount => _strokes.length;
-  bool get canUndo => _strokes.isNotEmpty;
+
+  /// Read-only view of the commands list. Always returns a fresh
+  /// UnmodifiableListView so consumers cannot accidentally mutate the
+  /// live state.
+  List<PaintCommand> get commands =>
+      List<PaintCommand>.unmodifiable(_commands);
+
+  int get commandCount => _commands.length;
+
+  /// DEPRECATED — M2.2 callers should use [commands].length. Kept
+  /// so out-of-tree widgets that reference `strokeCount` still
+  /// compile (returns 0).
+  int get strokeCount => _commands.length;
+
+  bool get canUndo => _commands.isNotEmpty;
   bool get canRedo => _redoStack.isNotEmpty;
-  bool get canClear => _strokes.isNotEmpty || _redoStack.isNotEmpty;
+  bool get canClear => _commands.isNotEmpty || _redoStack.isNotEmpty;
 
   Color get selectedColor => _selectedColor;
-  int get selectedColorIndex =>
-      PaletteCatalog.colors.indexOf(_selectedColor).clamp(0, PaletteCatalog.colors.length - 1);
+  int get selectedColorIndex => PaletteCatalog.colors
+      .indexOf(_selectedColor)
+      .clamp(0, PaletteCatalog.colors.length - 1);
   double get brushSize => _brushSize;
   BrushType get brushType => _brushType;
   int get brushTypeIndex => _brushType.index;
   String get name => _name;
   bool get isDirty => _isDirty;
 
-  /// Painter-side hook. Repaints the canvas at every change.
-  ValueListenable<DrawingStroke?> get activeStrokeListenable =>
+  ValueListenable<PaintCommand?> get activeStrokeListenable =>
       _activeStrokeNotifier;
 
 
-  // ── Stroke lifecycle — called by the canvas GestureDetector ──────────
+  // ── Stroke lifecycle ───────────────────────────────────────────────
 
-  /// Called on panDown. Mints an empty accumulator and seeds the
-  /// texture jitter.
   void beginStroke(Offset localPosition) {
-    // Soft tap on every new stroke — even a 4-year-old gets cue feedback.
     unawaited(HapticFeedback.lightImpact());
     _sessionStart ??= DateTime.now();
     _usedColorsThisSession.add(_selectedColor.value);
-    _activeStrokeNotifier.value = DrawingStroke.empty(
-      colorValue: _selectedColor.value,
-      brushSize: _brushSize,
-      brushType: _brushType,
-      textureSeed: math.Random().nextInt(1 << 30),
+    _activeStrokeNotifier.value = DrawStroke(
+      DrawingStroke.empty(
+        colorValue: _selectedColor.value,
+        brushSize: _brushSize,
+        brushType: _brushType,
+        textureSeed: math.Random().nextInt(1 << 30),
+      ),
     );
     updateStroke(localPosition);
   }
 
-  /// Called on every panUpdate (60 fps target). Appends a single point.
-  /// No notifyListeners — the ValueNotifier is the sole hot-path signal.
   void updateStroke(Offset localPosition) {
-    final DrawingStroke? current = _activeStrokeNotifier.value;
-    if (current == null) {
+    final PaintCommand? current = _activeStrokeNotifier.value;
+    if (current is! DrawStroke) {
       return;
     }
-    if (current.pointCount > 0) {
-      final (double ddx, double ddy) = current.pointAt(current.pointCount - 1);
+    final DrawingStroke stroke = current.stroke;
+    if (stroke.pointCount > 0) {
+      final (double ddx, double ddy) =
+          stroke.pointAt(stroke.pointCount - 1);
       final double dxDelta = localPosition.dx - ddx;
       final double dyDelta = localPosition.dy - ddy;
       final double distance =
           math.sqrt(dxDelta * dxDelta + dyDelta * dyDelta);
-      // Tiny jitter under 1.5 px? Skip. Keeps points from chunking
-      // when the finger is held still on a phone (60 Hz → 120 Hz noise).
       if (distance < 1.5) {
         return;
       }
     }
-    _activeStrokeNotifier.value = current.appendPoint(
-      localPosition.dx,
-      localPosition.dy,
-      DateTime.now().millisecondsSinceEpoch,
+    _activeStrokeNotifier.value = DrawStroke(
+      stroke.appendPoint(
+        localPosition.dx,
+        localPosition.dy,
+        DateTime.now().millisecondsSinceEpoch,
+      ),
     );
   }
 
-  /// Called on panUp. Pushes the active stroke into `_strokes`, clears
-  /// the redo stack (a new commit invalidates the redo future), plays the
-  /// paint cue, and schedules an auto-save.
   void endStroke() {
-    final DrawingStroke? completed = _activeStrokeNotifier.value;
+    final PaintCommand? completed = _activeStrokeNotifier.value;
     _activeStrokeNotifier.value = null;
-    if (completed == null || completed.pointCount < 2) {
-      // Tap-only gestures add negligible visual weight; skip noise.
+    if (completed is! DrawStroke) {
       return;
     }
-    _strokes.add(completed);
+    final DrawingStroke stroke = completed.stroke;
+    if (stroke.pointCount < 2) {
+      return;
+
+    }
+    _commands.add(completed);
     _strokeCountThisSession += 1;
     _redoStack.clear();
     _isDirty = true;
     _scheduleAutoSave();
-    // Best-effort paint cue — MagicSound.paint is the design-doc
-    // canonical brush stroke SFX. Falls back to MagicSound.bigTap if the
-    // pool fails to load (logged by SoundService).
     unawaited(sound.play(MagicSound.paint));
     notifyListeners();
   }
 
+
+  // ── Fill-region lifecycle (M2.2) ────────────────────────────────────
+
+  /// Commits a fill region from a tap point on the canvas. The
+  /// [pixels] buffer is interpreted as RGBA8888 (4 bytes per pixel).
+  /// Width × height dims are the buffer dimensions. The seed point is
+  /// in canvas coords.
+  void commitFillRegion({
+    required List<int> pixels,
+    required int width,
+    required int height,
+    required double seedX,
+    required double seedY,
+  }) {
+    if (_brushType != BrushType.fill) {
+      return;
+    }
+    final int seedColor = _selectedColor.value;
+    final FloodFillResult? result = floodFill(
+      pixels: pixels,
+      width: width,
+      height: height,
+      targetColor: seedColor,
+      seedX: seedX.round(),
+      seedY: seedY.round(),
+    );
+    if (result == null) {
+      unawaited(HapticFeedback.lightImpact());
+      return;
+    }
+    if (result.pixelCount == 0) {
+      return;
+    }
+    final List<int> mask = buildFillMask(result, seedColor);
+    final FillRegion region = FillRegion(
+      id: newFillRegionId(),
+      colorValue: seedColor,
+      mask: mask,
+      width: result.width,
+      height: result.height,
+      origin: Offset(result.bounds.left, result.bounds.top),
+      timestamp: DateTime.now(),
+    );
+    _commands.add(region);
+    _usedColorsThisSession.add(seedColor);
+    _redoStack.clear();
+    _isDirty = true;
+    _scheduleAutoSave();
+    fillAnimator.start(region.id, reduceMotion: false);
+    unawaited(HapticFeedback.mediumImpact());
+    unawaited(sound.play(MagicSound.magicSparkle));
+    notifyListeners();
+  }
+
+  /// Cancels the in-progress fade-in for [regionId]. Used when a fill
+  /// is undo'd mid-animation.
+  void retireFillAnimation(String regionId) {
+    fillAnimator.retire(regionId);
+  }
+
+
   // ── Brush state mutators ─────────────────────────────────────────────
 
-  /// Selects the swatch at [index]. No-op when out of bounds.
   void setColorAt(int index) {
     if (index < 0 || index >= PaletteCatalog.colors.length) {
       return;
@@ -275,7 +327,6 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Updates the brush size. Clamped to [4, 64] logical px.
   void setBrushSize(double sizeDp) {
     final double clamped = sizeDp.clamp(4.0, 64.0);
     if (clamped == _brushSize) {
@@ -285,7 +336,6 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Switches the active brush type. No haptic; toolbar already plays one.
   void setBrushType(BrushType type) {
     if (type == _brushType) {
       return;
@@ -294,7 +344,6 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Updates the player-facing drawing name.
   void renameDrawing(String name) {
     final String trimmed = name.trim().isEmpty ? 'Untitled' : name.trim();
     if (trimmed == _name) {
@@ -307,15 +356,20 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
+
   // ── Undo / redo / clear ──────────────────────────────────────────────
 
-  /// Pops the latest stroke and pushes it onto the redo stack.
   void undo() {
-    if (_strokes.isEmpty) return;
-    final DrawingStroke popped = _strokes.removeLast();
-    pictureCache.drop(popped.id);
+    if (_commands.isEmpty) return;
+    final PaintCommand popped = _commands.removeLast();
+    if (popped is DrawStroke) {
+      pictureCache.drop(popped.stroke.id);
+    }
+    if (popped is FillRegion) {
+      retireFillAnimation(popped.id);
+    }
     if (_redoStack.length >= _kMaxRedoStackDepth) {
-      _redoStack.removeAt(0); // bound memory
+      _redoStack.removeAt(0);
     }
     _redoStack.add(popped);
     unawaited(HapticFeedback.selectionClick());
@@ -324,24 +378,25 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Pops the most recently undone stroke and re-commits it.
   void redo() {
     if (_redoStack.isEmpty) return;
-    _strokes.add(_redoStack.removeLast());
+    final PaintCommand cmd = _redoStack.removeLast();
+    _commands.add(cmd);
+    if (cmd is FillRegion) {
+      fillAnimator.start(cmd.id, reduceMotion: false);
+    }
     unawaited(HapticFeedback.selectionClick());
     _isDirty = true;
     _scheduleAutoSave();
     notifyListeners();
   }
 
-  /// Wipes the canvas. Redo stack is also cleared (no "undo a clear"
-  /// chore for a 4-year-old). Special-case: when nothing was committed,
-  /// this is a no-op.
   void clearCanvas() {
-    if (_strokes.isEmpty && _redoStack.isEmpty) return;
-    _strokes.clear();
+    if (_commands.isEmpty && _redoStack.isEmpty) return;
+    _commands.clear();
     _redoStack.clear();
     pictureCache.clear();
+    fillAnimator.clearAll();
     _isDirty = true;
     _scheduleAutoSave();
     unawaited(HapticFeedback.mediumImpact());
@@ -351,21 +406,16 @@ class ColoringController extends ChangeNotifier {
 
   // ── Persistence ──────────────────────────────────────────────────────
 
-  /// Coalesced save. Cancels any pending timer, then schedules a fresh
-  /// one for `now + _kAutoSaveDebounce`. A 4-year-old finger-flicker
-  /// never produces more than one disk write per `debounce` window.
   void _scheduleAutoSave() {
     _saveTimer?.cancel();
     _saveTimer = Timer(_kAutoSaveDebounce, _flush);
   }
 
-  /// Writes the current state to the Hive box. Idempotent — safe to call
-  /// more than once per debounce window.
   void _flush() {
     _saveTimer = null;
     if (!_isDirty) return;
     _drawing = _drawing.copyWith(
-      strokes: List<DrawingStroke>.unmodifiable(_strokes),
+      commands: List<PaintCommand>.unmodifiable(_commands),
       name: _name,
       updatedAt: DateTime.now(),
       isDraft: false,
@@ -373,25 +423,16 @@ class ColoringController extends ChangeNotifier {
     final bool ok = ColoringRepository.save(box, _drawing);
     if (ok) {
       _isDirty = false;
-      logger.info('ColoringController._flush saved '
-          'id=${_drawing.id} strokes=${_drawing.strokeCount}');
+      logger.info(
+        'ColoringController._flush saved '
+        'id=${_drawing.id} commands=${_drawing.effectiveCommands.length}',
+      );
       _evaluateRewardEligibility();
     }
   }
 
-  // ── M1 — Player Economy integration ────────────────────────────────────
+  // ── M1 — Player Economy integration ────────────────────────────────
 
-  /// M1 (Player Economy) — evaluates drawing completion eligibility
-  /// against the latest PlayerState snapshot. Idempotent across the
-  /// auto-save debounce window: only fires once per session.
-  ///
-  /// Eligibility (deliberately NOT stroke-count, which a 4-year-old can
-  /// bypass with a single 600-point path):
-  ///   • Distinct colour values seen across this session > 2.
-  ///   • Wall-clock duration from first stroke > 15 seconds.
-  ///
-  /// When eligible, derives a 0..3 star rating from (duration × colors
-  /// × strokes) and grants the matching reward.
   void _evaluateRewardEligibility() {
     if (_rewardGrantedThisSession) {
       return;
@@ -408,7 +449,7 @@ class ColoringController extends ChangeNotifier {
     final int stars = RewardEngine.starsFromSignals(
       duration: duration,
       distinctColorCount: _usedColorsThisSession.length,
-      strokeCount: _strokeCountThisSession,
+      strokeCount: _commands.length,
     );
     if (stars <= 0) {
       return;
@@ -426,20 +467,16 @@ class ColoringController extends ChangeNotifier {
     logger.info(
       'ColoringController granted drawing reward (world=$worldId '
       'stars=$stars colors=${_usedColorsThisSession.length} '
-      'strokes=$_strokeCountThisSession '
+      'commands=${_commands.length} '
       'duration=${duration.inSeconds}s)',
     );
   }
 
-  /// Forces a synchronous flush. Called from the screen's dispose()
-  /// so a swipe-out doesn't lose the last two seconds of work.
   void forceSave() {
     _saveTimer?.cancel();
     _saveTimer = null;
     _flush();
   }
-
-  // ── Lifecycle ────────────────────────────────────────────────────────
 
   @override
   void dispose() {
@@ -447,6 +484,7 @@ class ColoringController extends ChangeNotifier {
     _saveTimer?.cancel();
     _activeStrokeNotifier.dispose();
     pictureCache.clear();
+    fillAnimator.dispose();
     super.dispose();
   }
 }

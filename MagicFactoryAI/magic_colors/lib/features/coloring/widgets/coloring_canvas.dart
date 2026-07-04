@@ -2,57 +2,72 @@
 // Magic Colors · features/coloring/widgets/coloring_canvas.dart
 // =============================================================================
 //
-// M2.1 — Interactive painting surface with pinch zoom + 2-finger pan.
+// M2.2 — Interactive painting surface with pinch zoom, 2-finger pan,
+// and bucket-fill tap routing.
 //
 // PAINTER DATA FLOW
 // -----------------
-//   • `Transform` (parent)           — applies the ViewTransform matrix
-//                                       (scale + translation). Matrix
-//                                       changes trigger a parent rebuild,
-//                                       not a Canvas repaint, so the
-//                                       RepaintBoundary still isolates
-//                                       the painting layer.
-//   • `RepaintBoundary`              — isolates 60 fps stroke repaint
-//                                       from outer chrome rebuilds.
-//   • `Listener` (raw PointerEvents) — accepts every pointer down/move/
-//                                       up/cancel. Routes to either the
-//                                       paint path (single finger) or the
-//                                       view transform path (two fingers).
-//   • `CustomPaint` (CustomPainter)  — paints committed strokes from
-//                                       the picture cache + the
-//                                       in-progress active stroke (live
-//                                       path with quadratic midpoint
-//                                       smoothing).
+//   • `Transform` (parent)                   — applies the ViewTransform
+//                                               matrix (scale + translation).
+//   • `RepaintBoundary` (key)                — isolates the painter +
+//                                               gives the fill-tool
+//                                               pipeline a snapshot root
+//                                               for `toImage` reads.
+//   • `Listener` (raw PointerEvents)         — accepts every pointer
+//                                               down/move/up/cancel.
+//                                               Routes to either:
+//                                                 - paint (single finger
+//                                                   for non-fill brushes),
+//                                                 - pinch (two fingers),
+//                                                 - FILL (single tap for
+//                                                   BrushType.fill).
+//   • `CustomPaint` (M21 painter)            — paints committed commands
+//                                               (DrawStroke + FillRegion)
+//                                               via BrushPainter.paintCommand.
+//                                               Repaints on either the
+//                                               active-stroke notifier OR
+//                                               the FillAnimator (via
+//                                               Listenable.merge) so a
+//                                               fade-in tick repaints the
+//                                               committed region alpha.
 //
 // POINTER ROUTING (state machine)
-//   • idle      — no fingers down. New pointerDown → paint mode.
+//   • idle      — no fingers down. New pointerDown → paint | fill.
 //   • painting  — exactly one pointer is the "paint pointer". Second
 //                 pointer commits the active stroke cleanly, then
 //                 transitions to pinching.
-//   • pinching  — two fingers. Pointer 3+ is ignored. When the count
-//                 drops below 2, return to idle. The remaining
-//                 finger does NOT auto-resume painting — the user
-//                 must lift all and start fresh (cleaner mental model
-//                 for a 4-year-old than a sticky-finger restart).
+//   • pinching  — two fingers. Pointer 3+ is ignored. Counts under 2
+//                 → idle (no auto-resume).
+//   • fill      — non-Duration mode. pointerDown commits a fill
+//                 synchronously (via controller.fillTap). pointerMove
+//                 + pointerUp are ignored for fill.
 //
-// PAINT COORDINATES
-//   The Listener is INSIDE the Transform. So `event.localPosition`
-//   is post-transform (canvas coords — what the controller expects).
-//   `event.position` is global screen coords (pre-Transform); pinch
-//   math uses screen coords so scaling "around the focal" stays
-//   intuitive even under heavy zoom.
+// M2.2 FILL ROUTING
+//   On pointerDown with BrushType.fill:
+//     1. Capture the RepaintBoundary root → renderObject.
+//     2. Call `boundary.toImage()` (returns Future<ui.Image>).
+//     3. Read the bytes via `image.toByteData(ImageByteFormat.rawRgba)`.
+//     4. Convert seedPos from canvas-space to image-space.
+//     5. Call `controller.fillTap(pixels, w, h, seedX, seedY)`.
+//   The controller's commitFillRegion runs the BFS + commits the
+//   FillRegion. The FillAnimator kicks the fade-in on commit.
 // =============================================================================
 
-import 'dart:ui' show Offset, Picture;
+import 'dart:async';
+import 'dart:ui' as ui show Image, ImageByteFormat;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import 'package:magic_colors/core/state/settings_state.dart';
 import 'package:magic_colors/core/utils/logger.dart';
 import 'package:magic_colors/features/coloring/coloring_controller.dart';
 import 'package:magic_colors/features/coloring/domain/drawing_stroke.dart';
+import 'package:magic_colors/features/coloring/domain/enums.dart';
+import 'package:magic_colors/features/coloring/domain/paint_command.dart';
+import 'package:magic_colors/features/coloring/fill/fill_animator.dart';
 import 'package:magic_colors/features/coloring/painting/brush_painter.dart';
 import 'package:magic_colors/features/coloring/painting/stroke_picture_cache.dart';
 import 'package:magic_colors/features/coloring/painting/stroke_smoother.dart';
@@ -61,22 +76,12 @@ import 'package:magic_colors/features/coloring/state/view_transform_controller.d
 
 // ── Tuning constants ────────────────────────────────────────────────────
 
-/// Faint background emoji alpha (template glyph).
 const double _kTemplateGlyphAlpha = 0.10;
-
-/// Template glyph size cap as a fraction of the canvas's smaller side.
 const double _kTemplateGlyphCapFraction = 0.55;
 
 
-// ── Pointer state-machine enum ──────────────────────────────────────────
+enum _GestureMode { idle, painting, pinching, fill }
 
-/// One of three modes the canvas can be in.
-enum _GestureMode { idle, painting, pinching }
-
-
-// =============================================================================
-//  ColoringCanvas — interactive surface.
-// =============================================================================
 
 class ColoringCanvas extends StatefulWidget {
   const ColoringCanvas({
@@ -96,66 +101,64 @@ class ColoringCanvas extends StatefulWidget {
 
 
 class _ColoringCanvasState extends State<ColoringCanvas> {
-  /// All pointer IDs currently down.
   final Set<int> _activePointers = <int>{};
-  // ignore: prefer_collection_declarations, library_private_types_in_public_api
   final Map<int, Offset> _pointerPositions = <int, Offset>{};
 
-  /// The single pointer currently authoring a stroke. Non-null only
-  /// in `_GestureMode.painting`.
   int? _paintPointer;
 
-  /// Current pinching state. Last-known centroid + initial pinch
-  /// distance captured at the first 2-finger move event so scale
-  /// factor = `current / initial` reads as the user's gesture ratio.
   Offset? _pinchLastCentroid;
   double? _pinchLastDistance;
 
+  /// M2.2 — GlobalKey to the inner RepaintBoundary. Used by the
+  /// fill-tap pipeline to snapshot the canvas's currently painted
+  /// content into a ui.Image.
+  final GlobalKey _paintBoundaryKey = GlobalKey(debugLabel: 'paintBoundary');
+
   _GestureMode _mode = _GestureMode.idle;
 
-  @override
-  void dispose() {
-    logger.debug('ColoringCanvas.dispose');
-    super.dispose();
-  }
 
-
-  // ── Pointer handlers ──────────────────────────────────────────────────
+  // ── Pointer handlers ────────────────────────────────────────────────
 
   void _onPointerDown(PointerDownEvent event) {
     _pointerPositions[event.pointer] = event.position;
     _activePointers.add(event.pointer);
 
+    // M2.2 — fill brush short-circuits to a tap-only flow.
+    if (widget.controller.brushType == BrushType.fill) {
+      if (_mode != _GestureMode.idle) {
+        return; // ignore taps mid-paint or mid-pinch
+      }
+      _mode = _GestureMode.fill;
+      unawaited(_handleFillTap(event.localPosition));
+      return;
+    }
+
     if (_mode == _GestureMode.idle && _activePointers.length == 1) {
-      // First finger. Begin a paint stroke.
       _mode = _GestureMode.painting;
       _paintPointer = event.pointer;
       widget.controller.beginStroke(event.localPosition);
       return;
     }
-
     if (_mode == _GestureMode.painting && _activePointers.length == 2) {
-      // Second finger landed mid-paint. Commit the in-flight stroke
-      // cleanly (push to _strokes, clear redo) and start pinching.
       widget.controller.endStroke();
       _paintPointer = null;
       _mode = _GestureMode.pinching;
       _capturePinchBaseline();
       return;
     }
-
-    // 3+ fingers, OR pinch-mid-flight arrival → ignored.
+    // 3+ fingers or pinch-mid-flight arrival → ignored.
   }
 
   void _onPointerMove(PointerMoveEvent event) {
     _pointerPositions[event.pointer] = event.position;
-
+    if (_mode == _GestureMode.fill) {
+      return; // fill is tap-only
+    }
     if (_mode == _GestureMode.painting &&
         event.pointer == _paintPointer) {
       widget.controller.updateStroke(event.localPosition);
       return;
     }
-
     if (_mode == _GestureMode.pinching && _activePointers.length == 2) {
       _applyPinch();
       return;
@@ -165,7 +168,10 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
   void _onPointerUp(PointerUpEvent event) {
     _activePointers.remove(event.pointer);
     _pointerPositions.remove(event.pointer);
-
+    if (_mode == _GestureMode.fill) {
+      _mode = _GestureMode.idle;
+      return;
+    }
     if (_mode == _GestureMode.painting &&
         event.pointer == _paintPointer) {
       _paintPointer = null;
@@ -173,7 +179,6 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
       widget.controller.endStroke();
       return;
     }
-
     if (_mode == _GestureMode.pinching && _activePointers.length < 2) {
       _mode = _GestureMode.idle;
       _pinchLastCentroid = null;
@@ -185,7 +190,10 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
   void _onPointerCancel(PointerCancelEvent event) {
     _activePointers.remove(event.pointer);
     _pointerPositions.remove(event.pointer);
-
+    if (_mode == _GestureMode.fill) {
+      _mode = _GestureMode.idle;
+      return;
+    }
     if (_mode == _GestureMode.painting &&
         event.pointer == _paintPointer) {
       _paintPointer = null;
@@ -193,7 +201,6 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
       widget.controller.endStroke();
       return;
     }
-
     if (_mode == _GestureMode.pinching && _activePointers.length < 2) {
       _mode = _GestureMode.idle;
       _pinchLastCentroid = null;
@@ -203,37 +210,64 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
   }
 
 
-  // ── Pinch math ────────────────────────────────────────────────────────
+  // ── Fill-tap pipeline ──────────────────────────────────────────────
 
-  /// Captures the first frame of a pinch gesture. Reads the two
-  /// current pointer positions and remembers their centroid + spread.
-  void _capturePinchBaseline() {
-    if (_activePointers.length < 2) {
+  /// Snapshots the inner RepaintBoundary to a ui.Image, extracts the
+  /// RGBA8888 bytes, and forwards them to
+  /// [ColoringController.commitFillRegion].
+  Future<void> _handleFillTap(Offset localPosition) async {
+    final RenderRepaintBoundary? boundary = _paintBoundaryKey.currentContext
+        ?.findRenderObject() as RenderRepaintBoundary?;
+    if (boundary == null) {
+      logger.warn(
+        'ColoringCanvas._handleFillTap: paintBoundary not attached',
+      );
       return;
     }
+    // Image dimensions equal the boundary's size.
+    final ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+    try {
+      final ByteData? byteData = await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+      if (byteData == null) {
+        logger.warn('ColoringCanvas._handleFillTap: byteData is null');
+        return;
+      }
+      // Convert Uint8List → List<int> for the controller API.
+      final List<int> pixels = byteData.buffer.asUint8List();
+      widget.controller.commitFillRegion(
+        pixels: pixels,
+        width: image.width,
+        height: image.height,
+        seedX: localPosition.dx.clamp(0, image.width - 1).toDouble(),
+        seedY: localPosition.dy.clamp(0, image.height - 1).toDouble(),
+      );
+    } finally {
+      image.dispose();
+    }
+  }
+
+
+  // ── Pinch math ──────────────────────────────────────────────────────
+
+  void _capturePinchBaseline() {
+    if (_activePointers.length < 2) return;
     final List<Offset> ps = _activePointers
         .map((int id) => _pointerPositions[id])
         .whereType<Offset>()
         .toList();
-    if (ps.length < 2) {
-      return;
-    }
+    if (ps.length < 2) return;
     _pinchLastCentroid = (ps[0] + ps[1]) / 2.0;
     _pinchLastDistance = (ps[1] - ps[0]).distance;
   }
 
-  /// Reads the current centroid + spread, calls into the view-transform
-  /// controller for scale + pan. Updates `_pinchLastCentroid` /
-  /// `_pinchLastDistance` so subsequent moves produce *delta-based*
-  /// scale ratios.
   void _applyPinch() {
     final List<Offset> ps = _activePointers
         .map((int id) => _pointerPositions[id])
         .whereType<Offset>()
         .toList();
-    if (ps.length < 2) {
-      return;
-    }
+    if (ps.length < 2) return;
     final Offset centroid = (ps[0] + ps[1]) / 2.0;
     final double distance = (ps[1] - ps[0]).distance;
     final Offset? prevCentroid = _pinchLastCentroid;
@@ -258,24 +292,21 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
   }
 
 
-  // ── Build ─────────────────────────────────────────────────────────────
+  // ── Build ───────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final SettingsState settings = context.watch<SettingsState>();
     final ColoringController controller = widget.controller;
     final ViewTransformController view = context.watch<ViewTransformController>();
-    // Ensure the canvas size is current. setCanvasSize re-clamps
-    // translation on LayoutBuilder fires; here we feed it the post-
-    // Layout viewport.
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         final Size canvasSize = constraints.biggest;
-        // Re-entrancy safe: setCanvasSize skips notify when unchanged.
         view.setCanvasSize(canvasSize);
         return Transform(
           transform: view.matrix,
           child: RepaintBoundary(
+            key: _paintBoundaryKey,
             child: Listener(
               behavior: HitTestBehavior.opaque,
               onPointerDown: _onPointerDown,
@@ -284,11 +315,12 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
               onPointerCancel: _onPointerCancel,
               child: CustomPaint(
                 painter: _M21CanvasPainter(
-                  strokes: controller.strokes,
+                  commands: controller.commands,
                   pictureCache: controller.pictureCache,
                   activeStrokeListenable: controller.activeStrokeListenable,
                   templateGlyph: controller.drawing.templateGlyph,
                   reduceMotion: settings.reduceMotion,
+                  fillAnimator: controller.fillAnimator,
                 ),
                 size: Size.infinite,
               ),
@@ -303,59 +335,78 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
 
 // =============================================================================
 //  _M21CanvasPainter — paint logic.
-//  Committed strokes draw from pre-baked Pictures; the in-progress one
-//  draws live with quadratic midpoint smoothing.
+//
+//  Committed commands dispatch through the BrushPainter.paintCommand
+//  unified dispatcher. DrawStrokes come from the picture cache; FillRegions
+//  paint live with row-by-row mask stamping + alpha from FillAnimator.
+//  The active (in-progress) stroke paints live with quadratic midpoint
+//  smoothing.
 // =============================================================================
 
 class _M21CanvasPainter extends CustomPainter {
   _M21CanvasPainter({
-    required this.strokes,
+    required this.commands,
     required this.pictureCache,
     required this.activeStrokeListenable,
     required this.templateGlyph,
     required this.reduceMotion,
-  }) : super(repaint: activeStrokeListenable);
+    required this.fillAnimator,
+  }) : super(
+          repaint: Listenable.merge(
+            <Listenable>[activeStrokeListenable, fillAnimator],
+          ),
+        );
 
-  final List<DrawingStroke> strokes;
+  final List<PaintCommand> commands;
   final StrokePictureCache pictureCache;
-  final ValueListenable<DrawingStroke?> activeStrokeListenable;
+  final ValueListenable<PaintCommand?> activeStrokeListenable;
   final String templateGlyph;
   final bool reduceMotion;
+  final FillAnimator fillAnimator;
 
   static const BrushPainter _brush = BrushPainter();
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Layer 1 — template glyph (faint background).
     if (templateGlyph.isNotEmpty) {
       _paintTemplate(canvas, size, templateGlyph);
     }
 
-    // Layer 2 — committed strokes from pre-baked Pictures.
-    for (final DrawingStroke s in strokes) {
-      final Picture pic = pictureCache.getOrBake(
-        s,
+    // Layer 2 — committed commands. Each dispatches via paintCommand;
+    // FillRegion alpha is multiplied by the FillAnimator's progress.
+    for (final PaintCommand c in commands) {
+      final double alpha = _alphaFor(c);
+      _brush.paintCommand(
+        canvas,
+        c,
         reduceMotion: reduceMotion,
+        alphaMultiplier: alpha,
       );
-      _stampPictureAtStrokeCoords(s, pic, canvas);
     }
 
-    // Layer 3 — in-progress active stroke with smoothing.
-    final DrawingStroke? active = activeStrokeListenable.value;
-    if (active != null && active.pointCount >= 2) {
-      _paintActiveSmoothed(active, canvas);
+    // Layer 3 — actively-painting stroke with smoothing.
+    final PaintCommand? active = activeStrokeListenable.value;
+    if (active is DrawStroke && active.stroke.pointCount >= 2) {
+      _paintActiveSmoothed(active.stroke, canvas);
     }
   }
 
   @override
   bool shouldRepaint(covariant _M21CanvasPainter old) {
-    return old.strokes != strokes ||
+    return old.commands != commands ||
         old.templateGlyph != templateGlyph ||
         old.reduceMotion != reduceMotion;
   }
 
+  double _alphaFor(PaintCommand c) {
+    if (c is FillRegion) {
+      return fillAnimator.progressFor(c.id);
+    }
+    return 1.0;
+  }
 
-  // ── Layer helpers ─────────────────────────────────────────────────────
+
+  // ── Layer helpers ───────────────────────────────────────────────────
 
   void _paintTemplate(Canvas canvas, Size size, String glyph) {
     final TextSpan span = TextSpan(
@@ -375,27 +426,6 @@ class _M21CanvasPainter extends CustomPainter {
     tp.paint(canvas, Offset(x, y));
   }
 
-  /// Plays back the stroke's pre-baked Picture at its world coords.
-  /// The bake was performed against the stroke's tight bounds — we
-  /// translate to that origin before drawing.
-  void _stampPictureAtStrokeCoords(
-    DrawingStroke s,
-    Picture pic,
-    Canvas canvas,
-  ) {
-    final b = strokeBounds(s);
-    canvas.save();
-    canvas.translate(b.minX, b.minY);
-    canvas.drawPicture(pic);
-    canvas.restore();
-  }
-
-  /// Active stroke is painted live (its geometry evolves on every
-  /// PointerMove). Apply quadratic midpoint smoothing in-place by
-  /// materialising a synthetic DrawingStroke with the smoothed points,
-  /// then route through the shared BrushPainter. The remaining
-  /// DrawingStroke fields (id, colorValue, brushSize, brushTypeIndex,
-  /// textureSeed, timestampMs) are preserved verbatim.
   void _paintActiveSmoothed(DrawingStroke raw, Canvas canvas) {
     final List<double> smoothed = StrokeSmoother.quadraticMidpoint(raw.points);
     final DrawingStroke faux = DrawingStroke(

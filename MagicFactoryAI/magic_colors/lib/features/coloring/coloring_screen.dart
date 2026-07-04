@@ -90,7 +90,7 @@ _StarterDrawing _resolveStarter(String drawingId) {
 //  ColoringScreen.
 // =============================================================================
 
-class ColoringScreen extends StatelessWidget {
+class ColoringScreen extends StatefulWidget {
   const ColoringScreen({
     super.key,
     this.drawingId = 'draw-now',
@@ -102,11 +102,18 @@ class ColoringScreen extends StatelessWidget {
   final String drawingId;
 
   @override
+  State<ColoringScreen> createState() => _ColoringScreenState();
+}
+
+
+class _ColoringScreenState extends State<ColoringScreen>
+    with TickerProviderStateMixin {
+  @override
   Widget build(BuildContext context) {
     final StorageService storage = context.read<StorageService>();
     final SoundService sound = context.read<SoundService>();
 
-    final _StarterDrawing starter = _resolveStarter(drawingId);
+    final _StarterDrawing starter = _resolveStarter(widget.drawingId);
 
     return ChangeNotifierProvider<ViewTransformController>(
       // M2.1 — owns the canvas view-matrix state (pinch zoom + 2-finger
@@ -117,10 +124,11 @@ class ColoringScreen extends StatelessWidget {
         create: (_) => ColoringController(
           box: storage.drawingsBox,
           sound: sound,
-          drawingId: drawingId,
+          drawingId: widget.drawingId,
           worldId: starter.worldId,
           templateGlyph: starter.templateGlyph,
           drawingName: starter.title,
+          vsync: this,
         ),
         child: const _ColoringScreenBody(),
       ),
