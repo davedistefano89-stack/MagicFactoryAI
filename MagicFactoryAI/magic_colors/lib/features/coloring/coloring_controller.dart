@@ -6,25 +6,30 @@
 // drawing session. Scoped per-screen via `ChangeNotifierProvider(create:)`
 // so each open drawing has its own controller.
 //
-// M2.2 STATE MACHINE
-// -----------------
+// STATE MACHINE
+// -------------
 //   • _commands        — append-only List<PaintCommand> (sealed union:
 //                        DrawStroke | FillRegion). This is the single
-//                        redo-stack source for M2+. The legacy
-//                        `_strokes` field is removed; migration is
-//                        applied on read by `Drawing.hydrate()`.
+//                        redo-stack source for M2+.
 //   • _redoStack       — commands popped off `_commands` by undo().
 //                        Cleared on every new commit (standard editor
 //                        mental model).
-//   • _activeStrokeNotifier    — ValueNotifier<PaintCommand?> for the
-//                                in-progress stroke while the user's
-//                                finger is down. Fill-region taps
-//                                commit synchronously (no drag
-//                                accumulation), so this only ever holds
-//                                DrawStroke commands at runtime.
+//   • _activeStrokeNotifier — ValueNotifier<PaintCommand?> for the
+//                        in-progress stroke while the user's finger is
+//                        down. Fill-region taps commit synchronously.
 //   • fillAnimator     — Drives the 240 ms fade-in for newly-committed
-//                        FillRegion commands. A small Ticker that ticks
-//                        at 60 fps while any region is mid-fade.
+//                        FillRegion commands.
+//   • gradientPair     — current Fill gradient (M2.3, Fill-only).
+//   • isGradientActive — flag the painter reads to decide between
+//                        single-colour and two-stop gradient shading.
+//
+// M2.3 INTEGRATIONS WITH PLAYERSTATE
+// ----------------------------------
+//   • rememberSelectedColor(index) — pushes the palette index onto the
+//                        player's recent-colours MRU.
+//   • toggleFavoriteColor(index)   — proxies PlayerState.toggleFavorite.
+//   • tryUnlockColorWithCoins      — proxies PlayerState.unlockColorWithCoins.
+//   • tryUnlockColorWithStars      — proxies PlayerState.unlockColorWithStars.
 //
 // REACTIVITY SCOPE
 // ----------------
@@ -63,13 +68,14 @@ import 'domain/drawing.dart';
 import 'domain/drawing_stroke.dart';
 import 'domain/enums.dart';
 import 'domain/fill_region.dart' show newFillRegionId;
+import 'domain/gradient_pair.dart';
 import 'domain/paint_command.dart';
 import 'fill/scanline_filler.dart';
 import 'fill/fill_animator.dart';
 import 'painting/stroke_picture_cache.dart';
 
 
-// ── Tuning constants ─────────────────────────────────────────────────────
+// ── Tuning constants ──────────────────────────────────────────────────
 
 const Duration _kAutoSaveDebounce = Duration(seconds: 2);
 const int _kMaxRedoStackDepth = 50;
@@ -146,15 +152,23 @@ class ColoringController extends ChangeNotifier {
 
   DateTime? _sessionStart;
   final Set<int> _usedColorsThisSession = <int>{};
-  int _strokeCountThisSession = 0;
   bool _rewardGrantedThisSession = false;
 
   /// M2.1 — pre-baked Pictures of committed DrawStrokes. FillRegion
   /// commands paint live (row-by-row) so they don't enter this cache.
+  /// Strokes are immutable, so a colour change does NOT clear the
+  /// cache — only `clear()` and `undo()` drop entries.
   final StrokePictureCache pictureCache = StrokePictureCache();
 
+  /// M2.3 — gradient pair used by the Fill tool. Default-disabled;
+  /// [setGradientEnabled] flips the painter's path between single
+  /// colour and two-stop shader.
+  GradientPair _gradientPair = GradientPair.single(
+    PaletteCatalog.colorValueAt(PaletteCatalog.defaultSelectedColorIndex),
+  );
 
-  // ── Public read model ─────────────────────────────────────────────────
+
+  // ── Public read model ─────────────────────────────────────────────
 
   Drawing get drawing => _drawing;
 
@@ -185,11 +199,15 @@ class ColoringController extends ChangeNotifier {
   String get name => _name;
   bool get isDirty => _isDirty;
 
+  /// M2.3 — read-side projection of the gradient pair. Painter reads.
+  GradientPair get gradientPair => _gradientPair;
+  bool get isGradientActive => _gradientPair.isTwoStop;
+
   ValueListenable<PaintCommand?> get activeStrokeListenable =>
       _activeStrokeNotifier;
 
 
-  // ── Stroke lifecycle ───────────────────────────────────────────────
+  // ── Stroke lifecycle ─────────────────────────────────────────────
 
   void beginStroke(Offset localPosition) {
     unawaited(HapticFeedback.lightImpact());
@@ -241,10 +259,8 @@ class ColoringController extends ChangeNotifier {
     final DrawingStroke stroke = completed.stroke;
     if (stroke.pointCount < 2) {
       return;
-
     }
     _commands.add(completed);
-    _strokeCountThisSession += 1;
     _redoStack.clear();
     _isDirty = true;
     _scheduleAutoSave();
@@ -253,7 +269,7 @@ class ColoringController extends ChangeNotifier {
   }
 
 
-  // ── Fill-region lifecycle (M2.2) ────────────────────────────────────
+  // ── Fill-region lifecycle (M2.2) ────────────────────────────────
 
   /// Commits a fill region from a tap point on the canvas. The
   /// [pixels] buffer is interpreted as RGBA8888 (4 bytes per pixel).
@@ -313,8 +329,11 @@ class ColoringController extends ChangeNotifier {
   }
 
 
-  // ── Brush state mutators ─────────────────────────────────────────────
+  // ── Brush state mutators ─────────────────────────────────────────
 
+  /// Tap-to-select. M2.3 — also pushes the index onto the player MRU
+  /// (best-effort: no-op when no PlayerState is wired). Selection
+  /// already gated by [ColorAcl.resolve] before this fires.
   void setColorAt(int index) {
     if (index < 0 || index >= PaletteCatalog.colors.length) {
       return;
@@ -324,6 +343,17 @@ class ColoringController extends ChangeNotifier {
       return;
     }
     _selectedColor = next;
+    rememberSelectedColor(index);
+    // M2.3 — gradient defaults to single-colour when the user
+    // re-selects; if enabled, the picker flips the stops to use
+    // this colour on both ends so the picker stays coherent with
+    // the active palette index.
+    if (_gradientPair.enabled) {
+      _gradientPair = GradientPair.topOnly(
+        newTop: next.value,
+        previous: _gradientPair,
+      );
+    }
     notifyListeners();
   }
 
@@ -357,7 +387,126 @@ class ColoringController extends ChangeNotifier {
   }
 
 
-  // ── Undo / redo / clear ──────────────────────────────────────────────
+  // ── M2.3 — gradient state ────────────────────────────────────────
+
+  /// Enables / disables the gradient pairing. When enabled the painter
+  /// paints FillRegions with a `ui.Gradient.linear` over the region
+  /// bounds. Drawing strokes ignore the gradient — only Fill uses it.
+  void setGradientEnabled(bool enabled) {
+    if (enabled == _gradientPair.enabled) {
+      return;
+    }
+    if (enabled) {
+      // Seed the pair with the current selected colour on both
+      // stops — the next tap on the picker sheet swaps the bottom
+      // stop to a different colour.
+      final int value = _selectedColor.value;
+      _gradientPair = GradientPair(topColorValue: value, bottomColorValue: value);
+    } else {
+      _gradientPair = GradientPair.single(_selectedColor.value);
+    }
+    notifyListeners();
+  }
+
+  /// Updates only the top stop of the active gradient.
+  void setGradientTop(int colorValue) {
+    _gradientPair = GradientPair(
+      topColorValue: colorValue,
+      bottomColorValue: _gradientPair.bottomColorValue,
+      enabled: _gradientPair.enabled,
+    );
+    notifyListeners();
+  }
+
+  /// Updates only the bottom stop.
+  void setGradientBottom(int colorValue) {
+    _gradientPair = GradientPair(
+      topColorValue: _gradientPair.topColorValue,
+      bottomColorValue: colorValue,
+      enabled: _gradientPair.enabled,
+    );
+    notifyListeners();
+  }
+
+
+  // ── M2.3 — PlayerState integration ───────────────────────────────
+
+  /// Pushes [paletteIndex] onto the player's recent-colours MRU. No-op
+  /// if [player] is null. Idempotent against duplicates.
+  void rememberSelectedColor(int paletteIndex) {
+    final PlayerState? p = player;
+    if (p == null) {
+      return;
+    }
+    p.addRecentColor(paletteIndex);
+  }
+
+  /// Long-press → toggles favorite. Returns the new favorited state.
+  bool toggleFavoriteColor(int paletteIndex) {
+    final PlayerState? p = player;
+    if (p == null) {
+      return false;
+    }
+    return p.toggleFavoriteColor(paletteIndex);
+  }
+
+  /// Spend coins to unlock [paletteIndex]. Refused if the player has
+  /// no PlayerState wired or cannot afford the cost.
+  bool tryUnlockColorWithCoins({
+    required int paletteIndex,
+    required int cost,
+  }) {
+    final PlayerState? p = player;
+    if (p == null) {
+      return false;
+    }
+    final bool ok = p.unlockColorWithCoins(
+      paletteIndex: paletteIndex,
+      cost: cost,
+    );
+    if (ok) {
+      playUnlockCelebration();
+      // Auto-select the just-unlocked colour so the user keeps
+      // painting without an extra tap.
+      setColorAt(paletteIndex);
+      notifyListeners();
+    }
+    return ok;
+  }
+
+  /// Spend stars in [worldId] to unlock [paletteIndex]. [worldId]
+  /// is the worldId string the player is unlocking the colour for
+  /// (caller-supplied so the controller can route by world).
+  bool tryUnlockColorWithStars({
+    required String worldId,
+    required int paletteIndex,
+    required int cost,
+  }) {
+    final PlayerState? p = player;
+    if (p == null) {
+      return false;
+    }
+    final bool ok = p.unlockColorWithStars(
+      worldId: worldId,
+      paletteIndex: paletteIndex,
+      cost: cost,
+    );
+    if (ok) {
+      playUnlockCelebration();
+      setColorAt(paletteIndex);
+      notifyListeners();
+    }
+    return ok;
+  }
+
+  /// Plays the lock-unlock feedback (sound + medium haptic).
+  Future<void> playUnlockCelebration() async {
+    unawaited(HapticFeedback.mediumImpact());
+    unawaited(sound.play(MagicSound.magicSparkle));
+  }
+
+
+  // ── Undo / redo / clear ──────────────────────────────────────────
 
   void undo() {
     if (_commands.isEmpty) return;
@@ -404,7 +553,7 @@ class ColoringController extends ChangeNotifier {
   }
 
 
-  // ── Persistence ──────────────────────────────────────────────────────
+  // ── Persistence ──────────────────────────────────────────────────
 
   void _scheduleAutoSave() {
     _saveTimer?.cancel();

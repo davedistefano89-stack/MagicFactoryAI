@@ -2,11 +2,9 @@
 // Magic Colors · lib/core/data/hive_keys.dart
 // =============================================================================
 //
-// Single source of truth for every Hive box key the app reads/writes
-// during the M1 (Player Economy & Reward Engine) flow. Concentrating
-// the literal strings here means a rename can never silently desync
-// the writer (PlayerState) from any future reader (AchievementService
-// during a cross-DB migration, or a QA telemetry export).
+// Single source of truth for every Hive box key the app reads/writes.
+// Concentrating the literal strings here means a rename can never
+// silently desync the writer (PlayerState) from any future reader.
 //
 // ADDING A NEW KEY: append it below with `const String …` and a brief
 // doc comment naming the producer and any consumer. Keys MUST be
@@ -35,3 +33,33 @@ const String hiveKeyStreakDays = 'player.streakDays';
 ///   (year/month/day) on write so DST and timezone shifts cannot poison
 ///   the streak comparison.
 const String hiveKeyLastStreakDate = 'player.lastStreakDate';
+
+
+// ── M2.3 Palette v2 keys ───────────────────────────────────────────────
+
+/// Key for the most-recently-used colour ids. Producer: PlayerState
+/// (FIFO list, capped at [_kRecentMruCapacity] = 8 entries).
+///   `List<int>` of ARGB packed ints (Color.value).
+const String hiveKeyRecentColorIds = 'player.recentColorIds';
+
+
+/// Key for the player-favourited colour ids. Producer: PlayerState.
+///   `List<String>` of palette-stable ids (kebab/snake). Hive 2 has no
+///   Set adapter; the writer/reader treat it as a Set semantically.
+const String hiveKeyFavoriteColorIds = 'player.favoriteColorIds';
+
+
+/// Key for the unlocked colour ids. Producer: PlayerState — set when
+/// the player spends coins (or stars via `spendWorldStarCurrency`) to
+/// unlock a tier-1 colour that ships locked by default.
+///   `List<String>` of palette-stable ids, same encoding as [
+///   hiveKeyFavoriteColorIds].
+const String hiveKeyUnlockedColorIds = 'player.unlockedColorIds';
+
+
+/// Capacity of the recent-colours MRU list. The canonical value lives
+/// on `PlayerState.kRecentMruCapacity` so the writer/reader surface
+/// stays next to the mutators that read it. This file keeps the
+/// pointer comment for grep-findability.
+/// (No constant declared here — kept as a comment to avoid an
+/// otherwise unused-element lint.)

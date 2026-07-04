@@ -2,12 +2,18 @@
 // Magic Colors · features/coloring/domain/enums.dart
 // =============================================================================
 //
-// BrushType — the five kid-facing brush kinds. Stored as `int` in
+// BrushType — the seven kid-facing brush kinds. Stored as `int` in
 // HiveDrawingStroke (`brushTypeIndex`) rather than as the enum directly,
 // because enum adapter ordering is brittle when an entry is inserted in
 // the middle of the list. The `index` getter is the canonical surface;
 // `fromIndex` is the safe reader with a clamp.
+//
+// M2.3 APPENDED
+//   • pencil (index 6) — thin textured line, duplication-resistant
+//     faint seed noise gives a hand-drawn pencil feel without
+//     expensive per-pixel shaders. Dark ink only.
 // =============================================================================
+
 
 /// The brush kinds. Order matters for storage: NEVER insert a new
 /// kind between the existing entries — append at the end and bump the
@@ -34,4 +40,9 @@ enum BrushType {
   /// colour across all connected pixels of the tapped colour. Treated
   /// as a TAP tool (no drag accumulation) by the canvas state machine.
   fill,
+
+  /// Pencil — M2.3. Thin dark line with random per-point jitter and a
+  /// faint noise seed overlay. Matches a real pencil's slight uneven
+  /// width. Append-only.
+  pencil,
 }

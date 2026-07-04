@@ -24,9 +24,10 @@ import 'package:magic_colors/features/coloring/domain/enums.dart';
 
 
 /// Brush-type labels. Mirrors [BrushType] in declaration order.
-/// M2.2 appends `BrushType.fill` so the chip-strip raises to 6 entries.
+/// M2.2 appends `BrushType.fill` (6 entries). M2.3 appends `pencil`
+/// (7 entries total).
 const List<String> _kBrushLabels = <String>[
-  'Round', 'Marker', 'Crayon', 'Sparkle', 'Eraser', 'Fill',
+  'Round', 'Marker', 'Crayon', 'Sparkle', 'Eraser', 'Fill', 'Pencil',
 ];
 
 

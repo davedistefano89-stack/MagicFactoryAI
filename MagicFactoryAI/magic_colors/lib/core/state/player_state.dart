@@ -11,12 +11,22 @@
 //   • `avatarId`                    — current avatar skin.
 //   • `streakDays`, `lastStreakDate` — daily-streak retention counter.
 //
+// M2.3 — PALETTE v2 ADDITIONS
+//   • `recentColorIds`     — MRU list (front = most-recent), capacity 8.
+//   • `favoriteColorIds`   — Set-as-List of favorited palette indexes.
+//   • `unlockedColorIds`   — Set-as-List of tier-1 colors unlocked via
+//                            coins OR stars (premium colors stay in a
+//                            separate gate — `player.isPremium`).
+//
 // Validation rules:
 //   • `spendCoins` / `spendGems` refuse negative balances and return
 //     `false` so calling code can show a "Not enough coins" toast.
 //   • `isPremium` is derived (active subscription OR expiry in the future).
 //   • `recordStreak` advances the streak iff the previous day was
 //     yesterday, otherwise resets to 1.
+//   • `unlockColorWithCoins` / `unlockColorWithStars` refuse when the
+//     player cannot afford the cost; both delegate to the underlying
+//     [spendCoins]/[grantWorldStars] writer so audit logs match.
 // =============================================================================
 
 import 'package:flutter/foundation.dart';
@@ -41,6 +51,10 @@ const String _kWorldStarsKey = hiveKeyWorldStars;
 const String _kUnlockedAchievementIdsKey = hiveKeyUnlockedAchievementIds;
 const String _kStreakDaysKey = hiveKeyStreakDays;
 const String _kLastStreakDateKey = hiveKeyLastStreakDate;
+// M2.3 — Palette v2 persistence.
+const String _kRecentColorIdsKey = hiveKeyRecentColorIds;
+const String _kFavoriteColorIdsKey = hiveKeyFavoriteColorIds;
+const String _kUnlockedColorIdsKey = hiveKeyUnlockedColorIds;
 
 
 // =============================================================================
@@ -65,6 +79,10 @@ final class PlayerState extends ChangeNotifier {
   static const int _defaultStreak = 0;
   static const Set<String> _starterWorlds = <String>{'unicorn'};
 
+  /// M2.3 recent MRU capacity. Exposed as a static const so the writer
+  /// and the UI agree on the visible row count.
+  static const int kRecentMruCapacity = 8;
+
   // ── Public read model ──────────────────────────────────────────────────
   int _coins = _defaultCoins;
   int _gems = _defaultGems;
@@ -86,6 +104,20 @@ final class PlayerState extends ChangeNotifier {
   /// on read we rebuild the Set. Anything that fails to cast returns
   /// an empty set so the PlayerState can never crash cold-start.
   Set<String> _unlockedAchievementIds = const <String>{};
+
+  // ── M2.3 — Palette v2 state ────────────────────────────────────────────
+  /// Recent colours MRU. Most-recent at the front (index 0). Capped at
+  /// [kRecentMruCapacity]. Persisted as a `List<int>` of palette
+  /// indexes for cheap O(1) sibling lookups.
+  List<int> _recentColorIds = <int>[];
+
+  /// Player-favourited palette indexes. Persisted as a `List<int>` —
+  /// semantically a Set; the writer deduplicates on insert.
+  List<int> _favoriteColorIds = <int>[];
+
+  /// Indexes of tier-1 colours the player has unlocked (via coins or
+  /// stars). Persisted as a `List<int>`.
+  List<int> _unlockedColorIds = <int>[];
 
   int get coins => _coins;
   int get gems => _gems;
@@ -120,6 +152,19 @@ final class PlayerState extends ChangeNotifier {
   /// Read-only view of the unlocked achievement-id set.
   Set<String> get unlockedAchievementIds =>
       Set<String>.unmodifiable(_unlockedAchievementIds);
+
+  // ── M2.3 — Palette v2 read ─────────────────────────────────────────────
+  /// Read-only view of the recent-colours MRU. Most-recent at index 0.
+  List<int> get recentColorIds =>
+      List<int>.unmodifiable(_recentColorIds);
+
+  /// Read-only view of the favourite colour indexes.
+  List<int> get favoriteColorIds =>
+      List<int>.unmodifiable(_favoriteColorIds);
+
+  /// Read-only view of the unlocked tier-1 colour indexes.
+  List<int> get unlockedColorIds =>
+      List<int>.unmodifiable(_unlockedColorIds);
 
 
   // ── Convenience predicates ───────────────────────────────────────────
@@ -296,13 +341,13 @@ final class PlayerState extends ChangeNotifier {
   /// against non-positive deltas. Persisted as `Map<String, int>` so adding
   /// new worlds to the catalog needs no schema migration.
   void grantWorldStars(String worldId, int delta, {String reason = 'unspecified'}) {
-    if (delta <= 0) {
+    if (delta == 0) {
       return;
     }
     final int current = _worldStars[worldId] ?? 0;
     final int next = (current + delta).clamp(0, 3);
     if (next == current) {
-      return; // Cap reached.
+      return; // Cap reached (only relevant when delta would go past 3).
     }
     _worldStars = <String, int>{
       ..._worldStars,
@@ -310,8 +355,8 @@ final class PlayerState extends ChangeNotifier {
     };
     _persistMap(_kWorldStarsKey, _worldStars);
     logger.info(
-      'PlayerState.grantWorldStars +${next - current} for $worldId '
-      '→ $next (reason=$reason)',
+      'PlayerState.grantWorldStars ${delta >= 0 ? "+" : ""}${next - current} '
+      'for $worldId → $next (reason=$reason)',
     );
     notifyListeners();
   }
@@ -341,6 +386,114 @@ final class PlayerState extends ChangeNotifier {
   }
 
 
+  // ── M2.3 — Palette v2 mutators ────────────────────────────────────────
+
+  /// Appends [paletteIndex] to the front of the recent-colours MRU.
+  /// De-duplicates against any prior occurrence so the user sees one
+  /// MRU slot per colour, then truncates to [kRecentMruCapacity].
+  /// Negative indexes are ignored (defensive — controllers should
+  /// already clamp).
+  void addRecentColor(int paletteIndex) {
+    if (paletteIndex < 0) {
+      return;
+    }
+    _recentColorIds = <int>[
+      paletteIndex,
+      ..._recentColorIds.where((int i) => i != paletteIndex),
+    ];
+    if (_recentColorIds.length > kRecentMruCapacity) {
+      _recentColorIds = _recentColorIds.sublist(0, kRecentMruCapacity);
+    }
+    _persist(_kRecentColorIdsKey, _recentColorIds);
+    notifyListeners();
+  }
+
+  /// Idempotent favourite toggle. Returns true iff the colour is now
+  /// favourited (false when removed). Mirrors the player's long-press
+  /// on a swatch.
+  bool toggleFavoriteColor(int paletteIndex) {
+    if (paletteIndex < 0) {
+      return false;
+    }
+    final bool nowFavorited;
+    if (_favoriteColorIds.contains(paletteIndex)) {
+      _favoriteColorIds = _favoriteColorIds
+          .where((int i) => i != paletteIndex)
+          .toList();
+      nowFavorited = false;
+    } else {
+      _favoriteColorIds = <int>[..._favoriteColorIds, paletteIndex];
+      nowFavorited = true;
+    }
+    _persist(_kFavoriteColorIdsKey, _favoriteColorIds);
+    notifyListeners();
+    return nowFavorited;
+  }
+
+  /// Spend coins to unlock a tier-1 colour. Refuses if the cost exceeds
+  /// the player's balance. Returns true on success.
+  bool unlockColorWithCoins({
+    required int paletteIndex,
+    required int cost,
+  }) {
+    if (paletteIndex < 0 || cost <= 0) {
+      return false;
+    }
+    if (_unlockedColorIds.contains(paletteIndex)) {
+      return true; // idempotent success.
+    }
+    if (_coins < cost) {
+      logger.warn(
+        'PlayerState.unlockColorWithCoins refused: '
+        'need=$cost have=$_coins for index=$paletteIndex',
+      );
+      return false;
+    }
+    _coins = _coins - cost;
+    _persist(_kCoinsKey, _coins);
+    _unlockedColorIds = <int>[..._unlockedColorIds, paletteIndex];
+    _persist(_kUnlockedColorIdsKey, _unlockedColorIds);
+    logger.info(
+      'PlayerState.unlockColorWithCoins -$cost → '
+      'unlockedColorIds=${_unlockedColorIds.length}',
+    );
+    notifyListeners();
+    return true;
+  }
+
+  /// Spend stars in [worldId] to unlock a tier-1 colour. Refuses if the
+  /// cost exceeds that world's earned stars. Returns true on success.
+  bool unlockColorWithStars({
+    required String worldId,
+    required int paletteIndex,
+    required int cost,
+  }) {
+    if (paletteIndex < 0 || cost <= 0) {
+      return false;
+    }
+    if (_unlockedColorIds.contains(paletteIndex)) {
+      return true; // idempotent success.
+    }
+    final int current = getWorldStars(worldId);
+    if (current < cost) {
+      logger.warn(
+        'PlayerState.unlockColorWithStars refused: '
+        'need=$cost have=$current world=$worldId index=$paletteIndex',
+      );
+      return false;
+    }
+    grantWorldStars(worldId, -cost, reason: 'color-unlock');
+    _unlockedColorIds = <int>[..._unlockedColorIds, paletteIndex];
+    _persist(_kUnlockedColorIdsKey, _unlockedColorIds);
+    logger.info(
+      'PlayerState.unlockColorWithStars -$cost world=$worldId → '
+      'unlockedColorIds=${_unlockedColorIds.length}',
+    );
+    notifyListeners();
+    return true;
+  }
+
+
   // ── Internals ─────────────────────────────────────────────────────────
   void _hydrate() {
     _coins = _readOrDefault<int>(_kCoinsKey, _defaultCoins);
@@ -353,6 +506,11 @@ final class PlayerState extends ChangeNotifier {
     _lastStreakDate = _readOrNull<DateTime>(_kLastStreakDateKey);
     _worldStars = _readMapOrEmpty<String, int>(_kWorldStarsKey);
     _unlockedAchievementIds = _readIdSet(_kUnlockedAchievementIdsKey);
+
+    // M2.3 hydrate — 3 new lists. All idempotent on cast failure.
+    _recentColorIds = _readIntListOrEmpty(_kRecentColorIdsKey);
+    _favoriteColorIds = _readIntListOrEmpty(_kFavoriteColorIdsKey);
+    _unlockedColorIds = _readIntListOrEmpty(_kUnlockedColorIdsKey);
   }
 
   /// Same contract as AppState._readOrDefault — returns [defaultValue] if
@@ -446,6 +604,26 @@ final class PlayerState extends ChangeNotifier {
         stackTrace: stack,
       );
       return const <String>{};
+    }
+  }
+
+  /// M2.3 — reads a Hive entry as `List<int>`. Cast failure falls back
+  /// to an empty list so a corrupted box (eg a user-imported save)
+  /// cannot crash cold-start.
+  List<int> _readIntListOrEmpty(String key) {
+    try {
+      final raw = _box.get(key);
+      if (raw == null) {
+        return <int>[];
+      }
+      return (raw as List).cast<int>().toList();
+    } on Object catch (error, stack) {
+      logger.error(
+        'PlayerState._readIntListOrEmpty cast failed key=$key',
+        error: error,
+        stackTrace: stack,
+      );
+      return <int>[];
     }
   }
 
