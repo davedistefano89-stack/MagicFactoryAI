@@ -29,6 +29,13 @@ import 'package:magic_colors/features/coloring/state/view_transform_controller.d
 const double _kSlack = ViewTransformConfig.panSlack;
 
 void main() {
+  // M3 — TestWidgetsFlutterBinding initialised so the scale-clamp
+  // no-op notify tests below can call HapticFeedback.lightImpact()
+  // via ViewTransformController.scaleAroundFocalPoint without
+  // tripping "Binding has not yet been initialized" on
+  // ServicesBinding.instance. Standard Flutter test-harness wiring.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('ViewTransformController — defaults', () {
     test('starts at identity with zero canvas size', () {
       final c = ViewTransformController();
