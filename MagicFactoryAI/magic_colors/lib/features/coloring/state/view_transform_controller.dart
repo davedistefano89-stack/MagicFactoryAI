@@ -28,11 +28,13 @@
 //     trigger a redundant widget rebuild.
 // =============================================================================
 
+import 'dart:async' show unawaited;
+
 import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter/widgets.dart' show Matrix4, Offset, Size;
 
 import 'package:magic_colors/core/utils/logger.dart';
-
 
 /// Tuning constants. Public so tests can assert exact bounds.
 abstract final class ViewTransformConfig {
@@ -50,7 +52,6 @@ abstract final class ViewTransformConfig {
   static const double panSlack = 0.75;
 }
 
-
 /// The view-side transform applied to the painter. Scale around the
 /// focal point keeps the world point under the user's fingers pinned
 /// to the same screen position across the scale change.
@@ -63,13 +64,18 @@ final class ViewTransformController extends ChangeNotifier {
   double _scale = 1.0;
   Offset _translation = Offset.zero;
 
+  /// Playtest polish — latch used so a pinch clamped to the
+  /// min / max zoom fires the boundary haptic ONCE per "attempt"
+  /// rather than on every move event (which would saturate the
+  /// haptic engine and feel like a buzzer stuck on).
+  bool _emitClampedHaptic = false;
+
   // ── Read model ────────────────────────────────────────────────────────
   double get scale => _scale;
   Offset get translation => _translation;
   Size get canvasSize => _canvasSize;
 
-  bool get isIdentity =>
-      _scale == 1.0 && _translation == Offset.zero;
+  bool get isIdentity => _scale == 1.0 && _translation == Offset.zero;
 
   /// Composited matrix, order = scale-around-origin AFTER translate.
   /// Identity-order:  translate → scale → draw-in-canvas-coords.
@@ -96,25 +102,33 @@ final class ViewTransformController extends ChangeNotifier {
   }
 
   /// Scale by [factor] anchored at [focalPointScreen]. No-op when
-  /// the resulting scale st hits min/max bounds (the user has
-  /// already hit the limit — quieting haptic feedback follows in
-  /// M2.4 polish).
+  /// the resulting scale hits min/max bounds — fires ONE light
+  /// haptic per "kid zoomed past the limit" so the system feels
+  /// responsive instead of silently stalling.
   void scaleAroundFocalPoint({
     required double factor,
     required Offset focalPointScreen,
   }) {
-    final double next = (_scale * factor).clamp(
+    final double prev = _scale;
+    final double next = (prev * factor).clamp(
       ViewTransformConfig.minScale,
       ViewTransformConfig.maxScale,
     );
-    if (next == _scale) {
+    if (next == prev) {
+      // Clamped — emit ONE boundary haptic, then suppress until
+      // the user retreats back into the active zoom range.
+      if (!_emitClampedHaptic) {
+        unawaited(HapticFeedback.lightImpact());
+        _emitClampedHaptic = true;
+      }
       return;
     }
+    // Real motion happened — re-arm the latch so the next clamp
+    // attempt can fire again.
+    _emitClampedHaptic = false;
     // World point under the focal — pre-scale.
-    final double worldX =
-        (focalPointScreen.dx - _translation.dx) / _scale;
-    final double worldY =
-        (focalPointScreen.dy - _translation.dy) / _scale;
+    final double worldX = (focalPointScreen.dx - _translation.dx) / _scale;
+    final double worldY = (focalPointScreen.dy - _translation.dy) / _scale;
     _scale = next;
     // Re-anchor: under the new scale, place the same world point at
     // the same screen point.
@@ -163,7 +177,7 @@ final class ViewTransformController extends ChangeNotifier {
     if (_canvasSize == Size.zero) {
       return candidate;
     }
-    final double slack = ViewTransformConfig.panSlack;
+    const double slack = ViewTransformConfig.panSlack;
     final double scaledW = _canvasSize.width * _scale;
     final double scaledH = _canvasSize.height * _scale;
     final double minX = -scaledW * slack;

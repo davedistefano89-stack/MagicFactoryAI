@@ -1,0 +1,47 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+
+  errors:
+    invalid_assignment: error
+    missing_return: error
+    missing_required_param: error
+    dead_code: warning
+    unused_import: warning
+    unused_local_variable: warning
+    unused_element: warning
+    unused_field: warning
+
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "lib/l10n/generated/**"
+
+  plugins:
+    # `custom_lint` is the single runner — the `magic_colors_lint`
+    # project's local rules register themselves via pubspec deps and
+    # are toggled individually under the `custom_lint.rules:` block
+    # below. Listing both here triggers the analyzer's
+    # `Multiple plugins can't be enabled` error (analyzer 7.x+).
+    - custom_lint
+
+# ── custom_lint ─────────────────────────────────────────────────────────────
+# `custom_lint:` is the runtime block for rules shipped by registered
+# plugins. With `magic_colors_lint` now in `analyzer.plugins` above,
+# individual rules can be toggled WITHOUT recompiling the plugin.
+#
+# Enable rules by their [LintCode] identifier; comment out a line to
+# temporarily turn off a rule without removing the dep.
+custom_lint:
+  rules:
+    # M2.4 — Flags in-shell `context.go(AppRoutes.<branchRoot>)` and
+    # bare `context.goHome|goWorlds|goGallery|goShop|goProfile()` calls
+    # that bypass the canonical `selectShellTab + goShellTab` shell
+    # pipeline. Suppress with `// ignore: shell_branch_nav` on the
+    # legitimate out-of-shell escape hatches (splash bootstrap,
+    # coloring deep-link exit).
+    shell_branch_nav: true
