@@ -25,7 +25,7 @@
 //   only.
 // =============================================================================
 
-import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
+import 'package:flutter/foundation.dart' show immutable;
 
 import '../../data/hive_keys.dart';
 import '../../domain/economy/reward.dart';
@@ -290,7 +290,12 @@ abstract final class AchievementService {
 
   /// Returns the catalog (immutable). Visible for tests so the catalog
   /// can be introspected without re-listing ids in test fixtures.
-  @visibleForTesting
+  /// M3 — public catalog accessor. Originally `@visibleForTesting` so
+  /// the Gallery drill-down screen could read it without paying the
+  /// production-API tax. The catalog is read-only (`List.unmodifiable`
+  /// construction at the bottom of this file) and free to share with
+  /// any consumer — promotion to public surface keeps feature code
+  /// off the test-only whitelist path.
   static List<AchievementDefinition> get catalog => _catalog;
 
   /// Looks up a definition by [id]. Returns null if the id is not in
