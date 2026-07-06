@@ -34,6 +34,7 @@ import '../../../../core/design/design_tokens.dart' show AppSpacing;
 import '../../../../core/routing/app_router.dart' show GoRouterContextX;
 import '../../../../core/routing/app_routes.dart' show HomeTab;
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/state/navigation_state.dart';
 import '../../../../core/state/player_state.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_gradients.dart';
@@ -291,7 +292,7 @@ enum _Accent { unlocked, premiumGated, lockedStarGated, unknown }
 //  WorldDetailScreen — the public widget.
 // =============================================================================
 
-class WorldDetailScreen extends StatelessWidget {
+class WorldDetailScreen extends StatefulWidget {
   const WorldDetailScreen({super.key, required this.worldId});
 
   /// URL path parameter injected by the AppRouter builder. Always
@@ -299,6 +300,48 @@ class WorldDetailScreen extends StatelessWidget {
   /// the route ever resolves without a parameter, then quietly redirected
   /// to the "Unknown world" surface).
   final String worldId;
+
+  @override
+  State<WorldDetailScreen> createState() => _WorldDetailScreenState();
+}
+
+/// Sprint 4b — the screen owns the NavigationState.currentWorldId stamp
+/// for its lifetime. `initState` writes the value (deferred one frame
+/// so the Provider is mounted); `dispose` clears it so popping back to
+/// the map doesn't leave a stale "you are here" highlight on the wrong
+/// island. Lives at the screen level (not the _DetailBody) so the
+/// not-found body branch also clears the stamp consistently. The
+/// NavigationState reference is captured in `didChangeDependencies` so
+/// `dispose` can call it without a try/catch over `context` (whose
+/// Provider scope is unreliable in dispose).
+class _WorldDetailScreenState extends State<WorldDetailScreen> {
+  /// Captured in [didChangeDependencies] for use in [dispose].
+  /// Nullable because didChangeDependencies may not have fired yet
+  /// when dispose runs on a screen that was built but never painted
+  /// (rare, but possible on hot-reload).
+  NavigationState? _nav;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _nav = context.read<NavigationState>();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Defer one frame so the Provider is mounted.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<NavigationState>().setCurrentWorldId(widget.worldId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _nav?.setCurrentWorldId(null);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -316,13 +359,13 @@ class WorldDetailScreen extends StatelessWidget {
             builder: (BuildContext context, BoxConstraints constraints) {
               final double maxWidth = _resolveMaxWidth(constraints.maxWidth);
               if (maxWidth.isInfinite) {
-                return _DetailBody(worldId: worldId);
+                return _DetailBody(worldId: widget.worldId);
               }
               return Align(
                 alignment: Alignment.topCenter,
                 child: ConstrainedBox(
                   constraints: BoxConstraints.tightFor(width: maxWidth),
-                  child: _DetailBody(worldId: worldId),
+                  child: _DetailBody(worldId: widget.worldId),
                 ),
               );
             },
@@ -376,6 +419,8 @@ class _DetailBody extends StatelessWidget {
           _AccentCta(accent: accent, world: found),
           AppSpacing.vGapLg,
           _OutlineStatsRow(world: found, accent: accent, player: player),
+          AppSpacing.vGapLg,
+          _GalleryShortcutRow(world: found),
         ],
       ),
     );
@@ -843,6 +888,61 @@ class _CompletionBigReadout extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//  _GalleryShortcutRow — Sprint 4b — secondary CTA that opens the
+//  Gallery filtered to this world. Sets NavigationState.galleryFilterWorldId
+//  so the Gallery honours the filter on first paint, then navigates.
+//  Lives below the primary CTA so the "Start colouring" button stays
+//  the dominant action.
+// =============================================================================
+
+class _GalleryShortcutRow extends StatelessWidget {
+  const _GalleryShortcutRow({required this.world});
+
+  final WorldData world;
+
+  void _openGallery(BuildContext context) {
+    AnalyticsService.instance.trackEvent(
+      'world_gallery_shortcut_pressed',
+      <String, Object?>{'id': world.id},
+    );
+    Haptics.light();
+    context.read<NavigationState>().setGalleryFilterWorldId(world.id);
+    context.goGallery();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MagicCard(
+      skin: MagicCardSkin.blank,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
+      borderRadius: AppCorner.brLg,
+      borderColor: AppColors.magicPurple.withValues(alpha: 0.18),
+      onTap: () => _openGallery(context),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          const Text('🎨', style: TextStyle(fontSize: 22)),
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            'My drawings in ${world.title}',
+            style: AppTypography.titleSm,
+          ),
+          const Spacer(),
+          const Icon(
+            Icons.arrow_forward_rounded,
+            color: AppColors.magicPurple,
+            size: 22,
           ),
         ],
       ),

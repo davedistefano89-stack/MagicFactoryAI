@@ -28,12 +28,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/design/design_tokens.dart'
     show AppSpacing, AppDuration;
 import '../../../../core/routing/app_router.dart' show GoRouterContextX;
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/state/navigation_state.dart';
 import '../../../../core/state/player_state.dart';
 import '../../../../core/state/settings_state.dart';
 import '../../../../core/theme/app_colors.dart';
@@ -170,6 +172,21 @@ const String _kPremiumGateFragment = 'premium-only';
 
 /// Difficulty tier rendered as a tiny inline chip beside the world title.
 enum WorldDifficulty { easy, medium, hard }
+
+// =============================================================================
+//  CompletionState — Sprint 4b — 4-state lifecycle for each island.
+// =============================================================================
+
+/// Sprint 4b — explicit state enum so the island render can branch on
+/// the lifecycle stage instead of recomputing it from booleans
+/// (`unlocked` + `isCurrent` + `isCompleted`) at every call site.
+///   • locked     — not yet reachable (premium-gated or star-gated).
+///   • available  — unlocked, but not the current world and not complete.
+///   • current    — the kid is inside this world right now (the world
+///                  map renders an OutlinePulse + tinted border here).
+///   • completed  — all 3 stars earned; renders a trophy badge and
+///                  drops the difficulty chip in favour of a "DONE" pill.
+enum CompletionState { locked, available, current, completed }
 
 // =============================================================================
 //  WorldData — frozen catalog entry. All allocations are `const` so the
@@ -382,6 +399,13 @@ class _WorldMapScreenState extends State<WorldMapScreen>
     final settings = context.watch<SettingsState>();
     final reduceMotion = settings.reduceMotion;
     final player = context.watch<PlayerState>();
+    // Sprint 4b — read the current world from NavigationState so the
+    // island grid can render the "you are here" highlight and the
+    // ContinueBanner can sync the resume target to the kid's actual
+    // position. NavigationState is ephemeral (process-lifetime only);
+    // that's fine — the current world is a "this session" concept.
+    final nav = context.watch<NavigationState>();
+    final String? currentWorldId = nav.currentWorldId;
 
     // Pause every ticker when reduceMotion is true. Restart on flip.
     _syncTickers(reduceMotion);
@@ -420,6 +444,7 @@ class _WorldMapScreenState extends State<WorldMapScreen>
                 columns: columns,
                 player: player,
                 reduceMotion: reduceMotion,
+                currentWorldId: currentWorldId,
               ),
             ],
           ),
@@ -477,6 +502,7 @@ class _WorldMapScreenState extends State<WorldMapScreen>
     required int columns,
     required PlayerState player,
     required bool reduceMotion,
+    required String? currentWorldId,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -487,10 +513,12 @@ class _WorldMapScreenState extends State<WorldMapScreen>
         _ContinueBanner(
           worldCatalog: _kWorldCatalog,
           player: player,
+          currentWorldId: currentWorldId,
         ),
         _WorldLeaderboard(
           worldCatalog: _kWorldCatalog,
           player: player,
+          currentWorldId: currentWorldId,
         ),
         Expanded(
           child: _WorldGrid(
@@ -500,6 +528,7 @@ class _WorldMapScreenState extends State<WorldMapScreen>
             floatController: _float,
             shimmerController: _shimmer,
             reduceMotion: reduceMotion,
+            currentWorldId: currentWorldId,
           ),
         ),
       ],
@@ -571,14 +600,35 @@ class _ContinueBanner extends StatelessWidget {
   const _ContinueBanner({
     required this.worldCatalog,
     required this.player,
+    required this.currentWorldId,
   });
 
   final List<WorldData> worldCatalog;
   final PlayerState player;
 
-  /// Highest-starred world in the catalog, or null if every world has 0
-  /// stars (fresh-install or just-after-reset state).
+  /// Sprint 4b — when the kid is currently inside a world, the banner
+  /// points at THAT world (so the CTA reads "continue" rather than
+  /// "switch"). Null when the kid hasn't opened a world yet this
+  /// session; the banner falls back to the best-stars heuristic.
+  final String? currentWorldId;
+
+  /// Sprint 4b — picks the resume target. If the kid is currently
+  /// inside an UNLOCKED world, the banner anchors to it (so the CTA
+  /// reads as "continue where you left off" in the actual current
+  /// world, not just the best-stars one). Locked current worlds (e.g.
+  /// a premium-gated world where the subscription lapsed) fall
+  /// through to the highest-starred world — pointing the banner at a
+  /// locked CTA would force the kid into the ParentGate. Falls back
+  /// to null if every world has 0 stars (fresh-install or just-
+  /// after-reset state).
   WorldData? _pickResumeTarget() {
+    if (currentWorldId != null) {
+      for (final WorldData w in worldCatalog) {
+        if (w.id == currentWorldId && _isWorldUnlocked(w, player)) {
+          return w;
+        }
+      }
+    }
     WorldData? best;
     int bestStars = 0;
     for (final WorldData w in worldCatalog) {
@@ -590,6 +640,20 @@ class _ContinueBanner extends StatelessWidget {
     }
     return best;
   }
+
+  /// Sprint 4b — gating check that mirrors [_IslandViewModel.resolve]'s
+  /// `unlocked` derivation so the banner never points at a world the
+  /// kid can't actually enter.
+  static bool _isWorldUnlocked(WorldData w, PlayerState p) {
+    if (w.isPremiumWorld && !p.isPremium) return false;
+    return p.getWorldStars(w.id) >= w.starsForUnlock;
+  }
+
+  /// True when the picked target matches the kid's current world.
+  /// Drives the "CURRENT" pill that lets the kid know the banner is
+  /// pointing at where they are, not at a generic "best-stars" world.
+  bool _isCurrentTarget(WorldData target) =>
+      currentWorldId != null && currentWorldId == target.id;
 
   @override
   Widget build(BuildContext context) {
@@ -638,11 +702,22 @@ class _ContinueBanner extends StatelessWidget {
                       color: AppColors.cloudWhite,
                     ),
                   ),
-                  Text(
-                    target.title,
-                    style: AppTypography.titleMd.copyWith(
-                      color: AppColors.cloudWhite,
-                    ),
+                  Row(
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          target.title,
+                          style: AppTypography.titleMd.copyWith(
+                            color: AppColors.cloudWhite,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_isCurrentTarget(target)) ...<Widget>[
+                        const SizedBox(width: AppSpacing.xs),
+                        const _HerePill(),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: AppSpacing.xs),
                   Row(
@@ -699,6 +774,7 @@ class _WorldLeaderboard extends StatelessWidget {
   const _WorldLeaderboard({
     required this.worldCatalog,
     required this.player,
+    required this.currentWorldId,
   });
 
   /// World catalog (typically [_kWorldCatalog]).
@@ -706,6 +782,10 @@ class _WorldLeaderboard extends StatelessWidget {
 
   /// PlayerState read — owned by the parent [_WorldMapScreenState.build].
   final PlayerState player;
+
+  /// Sprint 4b — the kid's current world, drives the "you are here"
+  /// highlight on the leaderboard row matching [currentWorldId].
+  final String? currentWorldId;
 
   /// Bounded height in dp. Sized so the MapHeader + ContinueBanner +
   /// ~3 visible leaderboard rows still leave enough flex space for
@@ -784,6 +864,7 @@ class _WorldLeaderboard extends StatelessWidget {
                   world: sorted[index],
                   earnedStars: player.getWorldStars(sorted[index].id),
                   player: player,
+                  isCurrent: currentWorldId == sorted[index].id,
                 );
               },
             ),
@@ -803,11 +884,17 @@ class _LeaderboardRow extends StatelessWidget {
     required this.world,
     required this.earnedStars,
     required this.player,
+    required this.isCurrent,
   });
 
   final WorldData world;
   final int earnedStars;
   final PlayerState player;
+
+  /// Sprint 4b — true when this row matches the kid's current world.
+  /// The leaderboard row gets a tinted left border + "HERE" pill so
+  /// the kid sees their position even on the dense list surface.
+  final bool isCurrent;
 
   bool get _isPremiumGate => world.isPremiumWorld && !player.isPremium;
 
@@ -818,14 +905,23 @@ class _LeaderboardRow extends StatelessWidget {
   bool get _tapEnabled =>
       !_isPremiumGate && earnedStars >= world.starsForUnlock;
 
+  /// Sprint 4b — resolve the row's left border colour. The current
+  /// world gets a tinted border that reads as a "you are here" pin;
+  /// the rest fall back to the original (light or dim) palette.
+  Color _rowBorderColor(Color fallback) =>
+      isCurrent ? AppColors.magicPink : fallback;
+
   @override
   Widget build(BuildContext context) {
     final Color rowBg = _tapEnabled
         ? AppColors.cloudWhite.withValues(alpha: 0.85)
         : AppColors.smoke.withValues(alpha: 0.12);
-    final Color rowBorder = _tapEnabled
-        ? AppColors.magicPurple.withValues(alpha: 0.20)
-        : AppColors.smoke.withValues(alpha: 0.32);
+    final Color rowBorder = _rowBorderColor(
+      _tapEnabled
+          ? AppColors.magicPurple.withValues(alpha: 0.20)
+          : AppColors.smoke.withValues(alpha: 0.32),
+    );
+    final double rowBorderWidth = isCurrent ? 2.5 : 1.0;
     final Color titleColor = _tapEnabled
         ? AppColors.deepInk
         : AppColors.deepInk.withValues(alpha: _kLockedGlyphAlpha);
@@ -851,7 +947,7 @@ class _LeaderboardRow extends StatelessWidget {
           decoration: BoxDecoration(
             color: rowBg,
             borderRadius: AppCorner.brMd,
-            border: Border.all(color: rowBorder),
+            border: Border.all(color: rowBorder, width: rowBorderWidth),
           ),
           child: InkWell(
           borderRadius: AppCorner.brMd,
@@ -1036,6 +1132,7 @@ class _WorldGrid extends StatelessWidget {
     required this.floatController,
     required this.shimmerController,
     required this.reduceMotion,
+    required this.currentWorldId,
   });
 
   final int columns;
@@ -1044,6 +1141,10 @@ class _WorldGrid extends StatelessWidget {
   final AnimationController floatController;
   final AnimationController shimmerController;
   final bool reduceMotion;
+
+  /// Sprint 4b — the kid's current world. Threaded to every row so the
+  /// island that matches gets the "you are here" highlight.
+  final String? currentWorldId;
 
   @override
   Widget build(BuildContext context) {
@@ -1074,6 +1175,7 @@ class _WorldGrid extends StatelessWidget {
             floatController: floatController,
             shimmerController: shimmerController,
             reduceMotion: reduceMotion,
+            currentWorldId: currentWorldId,
           );
         },
       ),
@@ -1127,6 +1229,7 @@ class _WorldRow extends StatelessWidget {
     required this.floatController,
     required this.shimmerController,
     required this.reduceMotion,
+    required this.currentWorldId,
   });
 
   final int rowIndex;
@@ -1137,9 +1240,17 @@ class _WorldRow extends StatelessWidget {
   final AnimationController shimmerController;
   final bool reduceMotion;
 
+  /// Sprint 4b — the kid's current world. Threaded down to every
+  /// island so the matching tile gets the "you are here" highlight.
+  final String? currentWorldId;
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    // Sprint 4b — staggered entrance: each row fades + slides up from
+    // a small offset. Stagger cap stops the bottom rows from waiting
+    // for a noticeable beat. Disabled entirely under reduceMotion so
+    // the parents-area toggle keeps the page on-screen instantly.
+    final Widget rowContent = Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1157,6 +1268,19 @@ class _WorldRow extends StatelessWidget {
         ],
       ),
     );
+    if (reduceMotion) {
+      return rowContent;
+    }
+    final int clampedRow = rowIndex.clamp(0, 4);
+    return rowContent
+        .animate(delay: (60 * clampedRow).ms)
+        .fadeIn(duration: 360.ms, curve: Curves.easeOutCubic)
+        .slideY(
+          begin: 0.12,
+          end: 0,
+          duration: 360.ms,
+          curve: Curves.easeOutCubic,
+        );
   }
 
   Widget _buildCell(BuildContext context, {required int index}) {
@@ -1181,6 +1305,7 @@ class _WorldRow extends StatelessWidget {
       floatController: floatController,
       shimmerController: shimmerController,
       reduceMotion: reduceMotion,
+      currentWorldId: currentWorldId,
     );
   }
 }
@@ -1202,6 +1327,7 @@ class _WorldIsland extends StatelessWidget {
     required this.floatController,
     required this.shimmerController,
     required this.reduceMotion,
+    required this.currentWorldId,
   });
 
   final WorldData world;
@@ -1211,12 +1337,18 @@ class _WorldIsland extends StatelessWidget {
   final AnimationController shimmerController;
   final bool reduceMotion;
 
+  /// Sprint 4b — the kid's current world. Threaded down from
+  /// `_WorldRow` so the matching island can render the OutlinePulse
+  /// "you are here" highlight + a tinted border.
+  final String? currentWorldId;
+
   @override
   Widget build(BuildContext context) {
     final _IslandViewModel vm = _IslandViewModel.resolve(
       world: world,
       player: player,
       phaseSeed: phaseSeed,
+      currentWorldId: currentWorldId,
     );
 
     final Widget island = SizedBox(
@@ -1237,11 +1369,8 @@ class _WorldIsland extends StatelessWidget {
             child: MagicCard(
               onTap: vm.unlocked ? () => _onIslandTap(context, vm) : null,
               skin: vm.unlocked ? MagicCardSkin.tinted : MagicCardSkin.blank,
-              elevation: vm.unlocked
-                  ? AppElevation.elevation2
-                  : AppElevation.elevation1,
-              borderColor:
-                  vm.unlocked && vm.isPremiumView ? Colors.transparent : null,
+              elevation: _islandElevation(vm),
+              borderColor: _islandBorderColor(vm),
               borderRadius: AppCorner.brLg,
               padding: AppSpacing.cardPaddingGenerous,
               child: _IslandBody(viewModel: vm),
@@ -1251,13 +1380,20 @@ class _WorldIsland extends StatelessWidget {
       ),
     );
 
-    // OutlinePulse: raised only for FRESHLY-unlocked Premium worlds. Its
-    // built-in reduceMotion fast-path supplies the static 2 dp hairline
-    // when the parent-toggle for over-stimulated kids is on.
-    if (vm.shouldShowFocusPulse) {
+    // OutlinePulse: Sprint 4b widened the rule. Raised for FRESHLY-
+    // unlocked Premium worlds (v1.0) AND for the kid's current world
+    // (new). The two intents don't overlap visually because the
+    // current-world pulse uses the magicPink colour (the freshly-
+    // unlocked one keeps the magicPurple default). The reduceMotion
+    // fast-path inside OutlinePulse collapses both to a static 2 dp
+    // hairline when the parents-area toggle is on.
+    final bool wantsPulse =
+        vm.shouldShowFocusPulse || (vm.isCurrent && !vm.isCompleted);
+    if (wantsPulse) {
       return RepaintBoundary(
         child: OutlinePulse(
           periodDuration: _kFocusPulsePeriod,
+          color: vm.isCurrent ? AppColors.magicPink : null,
           child: _wrapWithFloat(island),
         ),
       );
@@ -1306,6 +1442,28 @@ class _WorldIsland extends StatelessWidget {
     Haptics.light();
     context.goWorldDetail(vm.world.id);
   }
+
+  /// Sprint 4b — picks the MagicCard border color the island render
+  /// should apply. The current world gets a tinted border so it stands
+  /// out from the unlocked neighbours; completed worlds keep the
+  /// MagicCard's default transparent border (the trophy badge is
+  /// the signal).
+  Color? _islandBorderColor(_IslandViewModel vm) {
+    if (vm.unlocked && vm.isPremiumView) return Colors.transparent;
+    if (vm.isCurrent) return AppColors.magicPink;
+    return null;
+  }
+
+  /// Sprint 4b — picks the BoxShadow list for the island MagicCard.
+  /// The current world sits one elevation step above the rest so it
+  /// reads as "raised" without a distracting scale change. `AppElevation`
+  /// exposes `z0`–`z3` (the M3 z-axis aliases — see `app_shape.dart`),
+  /// and `z3` is the hero shadow used for the current-world emphasis.
+  List<BoxShadow>? _islandElevation(_IslandViewModel vm) {
+    if (vm.isCurrent) return AppElevation.z3;
+    if (vm.unlocked) return AppElevation.elevation2;
+    return AppElevation.elevation1;
+  }
 }
 
 /// Phase-offset modulus — every island's wobble phase is `phaseSeed % N`,
@@ -1323,10 +1481,17 @@ const int _kIslandPhaseModulus = 8;
 @immutable
 class _IslandViewModel {
   /// Resolves the world + player state into the derived view model.
+  ///
+  /// Sprint 4b — accepts an optional [currentWorldId] so the model
+  /// can mark the island that matches the kid's current world
+  /// (`isCurrent == true`) and surface a `completionState` enum
+  /// (`locked` / `available` / `current` / `completed`) for the
+  /// island render to branch on.
   factory _IslandViewModel.resolve({
     required WorldData world,
     required PlayerState player,
     required int phaseSeed,
+    String? currentWorldId,
   }) {
     final bool hasSubscription = player.isPremium;
     final bool premiumGate = world.isPremiumWorld && !hasSubscription;
@@ -1341,6 +1506,23 @@ class _IslandViewModel {
     final bool isPremiumView = world.isPremiumWorld || hasSubscription;
     final bool shouldShowFocusPulse = isPremiumView && unlocked;
 
+    // Sprint 4b — derived state flags the island render branches on.
+    final bool isCurrent = unlocked && currentWorldId == world.id;
+    final bool isCompleted = unlocked && stableStars >= 3;
+    final String? requirementsText = _resolveRequirementsText(
+      unlocked: unlocked,
+      premiumGate: premiumGate,
+      world: world,
+      earnedStars: stableStars,
+    );
+    final CompletionState completionState = !unlocked
+        ? CompletionState.locked
+        : isCurrent
+            ? CompletionState.current
+            : isCompleted
+                ? CompletionState.completed
+                : CompletionState.available;
+
     return _IslandViewModel(
       world: world,
       unlocked: unlocked,
@@ -1349,8 +1531,37 @@ class _IslandViewModel {
       isPremiumGateLocked: premiumGate,
       isPremiumView: isPremiumView,
       shouldShowFocusPulse: shouldShowFocusPulse,
+      isCurrent: isCurrent,
+      isCompleted: isCompleted,
+      requirementsText: requirementsText,
+      completionState: completionState,
     );
   }
+
+  /// Sprint 4b — human-readable copy for the locked-tile overlay.
+  /// Returns null when the world is unlocked (no overlay needed).
+  /// Premium-gated worlds surface "Premium required" (the parent
+  /// already paid the gate, the kid sees a calm "this is Premium");
+  /// star-gated worlds surface "Earn N more star(s)".
+  static String? _resolveRequirementsText({
+    required bool unlocked,
+    required bool premiumGate,
+    required WorldData world,
+    required int earnedStars,
+  }) {
+    if (unlocked) return null;
+    if (premiumGate) {
+      return 'Premium required';
+    }
+    final int remaining = world.starsForUnlock - earnedStars;
+    if (remaining <= 0) {
+      // Edge: starsReached was true above so this branch is dead, but
+      // a guard keeps the string safe if the heuristic ever changes.
+      return null;
+    }
+    return 'Earn $remaining more star${remaining == 1 ? '' : 's'}';
+  }
+
   const _IslandViewModel({
     required this.world,
     required this.unlocked,
@@ -1359,6 +1570,10 @@ class _IslandViewModel {
     required this.isPremiumGateLocked,
     required this.isPremiumView,
     required this.shouldShowFocusPulse,
+    required this.isCurrent,
+    required this.isCompleted,
+    required this.requirementsText,
+    required this.completionState,
   });
 
   final WorldData world;
@@ -1386,6 +1601,24 @@ class _IslandViewModel {
   /// V1.0 simple rule: freshly-unlocked Premium worlds. Sprint-4 will
   /// replace this with a Hive-backed "just unlocked" event flag.
   final bool shouldShowFocusPulse;
+
+  /// Sprint 4b — true iff this island matches the kid's current world
+  /// (the one the world detail or coloring screen is anchored to).
+  final bool isCurrent;
+
+  /// Sprint 4b — true iff the world is unlocked AND the player has
+  /// earned all 3 stars. Drives the trophy badge + removes the
+  /// difficulty chip in favour of a "DONE" pill.
+  final bool isCompleted;
+
+  /// Sprint 4b — short copy for the locked-tile overlay. Null when
+  /// the world is unlocked (no overlay needed). Either "Premium
+  /// required" or "Earn N more star(s)".
+  final String? requirementsText;
+
+  /// Sprint 4b — explicit 4-state lifecycle so the island render can
+  /// branch on the stage instead of recomputing from booleans.
+  final CompletionState completionState;
 }
 
 /// M3 production — earned-stars lookup for [world].
@@ -1418,11 +1651,7 @@ class _IslandBody extends StatelessWidget {
 
     return Semantics(
       button: vm.unlocked,
-      label: '${vm.unlocked ? _kUnlockedFragment : _kLockedFragment}: '
-          '$title, '
-          '${vm.unlocked ? vm.earnedStars : 0} of 3 stars, '
-          '${vm.completionPct}% complete'
-          '${vm.isPremiumGateLocked ? ', $_kPremiumGateFragment' : ''}',
+      label: _islandSemanticsLabel(vm),
       excludeSemantics: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1431,10 +1660,14 @@ class _IslandBody extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: <Widget>[
-              _DifficultyChip(difficulty: vm.world.difficulty),
+              if (vm.isCompleted)
+                const _CompletedBadge()
+              else
+                _DifficultyChip(difficulty: vm.world.difficulty),
               if (vm.isPremiumGateLocked) const _LockBadge(),
               if (vm.isPremiumView && !vm.isPremiumGateLocked)
                 const _PremiumBadge(),
+              if (vm.isCurrent) const _CurrentBadge(),
             ],
           ),
           Center(
@@ -1470,10 +1703,205 @@ class _IslandBody extends StatelessWidget {
                 unlocked: vm.unlocked,
               ),
               const SizedBox(height: AppSpacing.xs),
-              _CompletionMeter(pct: vm.completionPct),
+              if (vm.unlocked)
+                _CompletionMeter(pct: vm.completionPct)
+              else if (vm.requirementsText != null)
+                _RequirementsChip(text: vm.requirementsText!),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// Sprint 4b — assembles a screen-reader label that names the
+  /// lifecycle stage + the lock reason. Mirrors the same a11y
+  /// pattern the v1.0 island used so VoiceOver/TalkBack users
+  /// don't lose context.
+  String _islandSemanticsLabel(_IslandViewModel vm) {
+    final String stage;
+    switch (vm.completionState) {
+      case CompletionState.current:
+        stage = 'current world';
+        break;
+      case CompletionState.completed:
+        stage = 'completed';
+        break;
+      case CompletionState.available:
+        stage = _kUnlockedFragment;
+        break;
+      case CompletionState.locked:
+        stage = _kLockedFragment;
+        break;
+    }
+    return '$stage: ${vm.world.title}, '
+        '${vm.unlocked ? vm.earnedStars : 0} of 3 stars, '
+        '${vm.completionPct}% complete'
+        '${vm.isPremiumGateLocked ? ', $_kPremiumGateFragment' : ''}'
+        '${vm.requirementsText != null && !vm.unlocked ? ', ${vm.requirementsText}' : ''}';
+  }
+}
+
+// =============================================================================
+//  _CurrentBadge — Sprint 4b small "YOU ARE HERE" pill on the island that
+//  matches the kid's current world. Mirrors _PremiumBadge / _LockBadge so
+//  the pill family stays consistent.
+// =============================================================================
+
+class _CurrentBadge extends StatelessWidget {
+  const _CurrentBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'You are here',
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: _kDifficultyChipHPadding,
+          vertical: _kDifficultyChipVPadding,
+        ),
+        decoration: const BoxDecoration(
+          color: AppColors.magicPink,
+          borderRadius: AppCorner.brSm,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Text(
+              '📍',
+              style: TextStyle(fontSize: _kPillGlyphSize),
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              'HERE',
+              style: AppTypography.labelMd.copyWith(
+                color: AppColors.cloudWhite,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//  _CompletedBadge — Sprint 4b small "DONE" pill on islands where the
+//  player has earned all 3 stars. Replaces the difficulty chip in the
+//  same slot (the chip becomes noise once the world is finished).
+// =============================================================================
+
+class _CompletedBadge extends StatelessWidget {
+  const _CompletedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'All 3 stars earned',
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: _kDifficultyChipHPadding,
+          vertical: _kDifficultyChipVPadding,
+        ),
+        decoration: const BoxDecoration(
+          gradient: AppGradients.playNow,
+          borderRadius: AppCorner.brSm,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Text(
+              '🏆',
+              style: TextStyle(fontSize: _kPillGlyphSize),
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              'DONE',
+              style: AppTypography.labelMd.copyWith(
+                color: AppColors.cloudWhite,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//  _HerePill — Sprint 4b — small "HERE" pill rendered alongside the
+//  ContinueBanner title when the banner is pointing at the kid's
+//  current world. Also reused by [_LeaderboardRow] to mark the row that
+//  matches [currentWorldId]. Mirrors the existing pill family
+//  (PRO / EARN STARS / GEMS) so the visual language stays consistent.
+// =============================================================================
+
+class _HerePill extends StatelessWidget {
+  const _HerePill();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: const BoxDecoration(
+        color: AppColors.magicPink,
+        borderRadius: AppCorner.brSm,
+      ),
+      child: const Text(
+        'HERE',
+        style: TextStyle(
+          fontSize: 11,
+          color: AppColors.cloudWhite,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//  _RequirementsChip — Sprint 4b small caption rendered in the
+//  completion-meter slot when the world is locked. Either
+//  "Premium required" or "Earn N more star(s)".
+// =============================================================================
+
+class _RequirementsChip extends StatelessWidget {
+  const _RequirementsChip({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: text,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: AppSpacing.xs,
+        ),
+        decoration: BoxDecoration(
+          color: AppColors.smoke.withValues(alpha: 0.16),
+          borderRadius: AppCorner.brSm,
+          border: Border.all(
+            color: AppColors.smoke.withValues(alpha: 0.32),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Text('🔒', style: TextStyle(fontSize: 14)),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              text,
+              style: AppTypography.caption(color: AppColors.deepInk),
+            ),
+          ],
+        ),
       ),
     );
   }

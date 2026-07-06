@@ -33,6 +33,7 @@ import 'package:magic_colors/core/routing/app_router.dart'
     show GoRouterContextX;
 import 'package:magic_colors/core/services/sound_service.dart';
 import 'package:magic_colors/core/services/storage_service.dart';
+import 'package:magic_colors/core/state/navigation_state.dart';
 import 'package:magic_colors/core/state/settings_state.dart';
 import 'package:magic_colors/core/widgets/animated_background.dart';
 import 'package:magic_colors/core/theme/app_gradients.dart';
@@ -130,7 +131,10 @@ class _ColoringScreenState extends State<ColoringScreen>
           drawingName: starter.title,
           vsync: this,
         ),
-        child: const _ColoringScreenBody(),
+        child: _ColoringNavigationSync(
+          worldId: starter.worldId,
+          child: const _ColoringScreenBody(),
+        ),
       ),
     );
   }
@@ -145,6 +149,57 @@ class _ColoringScreenBody extends StatefulWidget {
 
   @override
   State<_ColoringScreenBody> createState() => _ColoringScreenBodyState();
+}
+
+/// Sprint 4b — small wrapper that stamps NavigationState.currentWorldId
+/// for the lifetime of the coloring screen. Disposes the stamp on
+/// pop so the world map's "you are here" highlight follows the kid's
+/// actual location, not the last screen they backed out of.
+class _ColoringNavigationSync extends StatefulWidget {
+  const _ColoringNavigationSync({required this.worldId, required this.child});
+
+  final String worldId;
+  final Widget child;
+
+  @override
+  State<_ColoringNavigationSync> createState() =>
+      _ColoringNavigationSyncState();
+}
+
+class _ColoringNavigationSyncState extends State<_ColoringNavigationSync> {
+  /// Captured in [didChangeDependencies] for use in [dispose].
+  /// Nullable because didChangeDependencies may not have fired yet
+  /// when dispose runs on a screen that was built but never painted
+  /// (rare, but possible on hot-reload). The captured reference
+  /// replaces the previous try/catch around `context.read` in
+  /// dispose — `context` is unreliable in dispose (Provider scope
+  /// can already be torn down), and the broad `on Object` catch
+  /// hid real bugs.
+  NavigationState? _nav;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _nav = context.read<NavigationState>();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<NavigationState>().setCurrentWorldId(widget.worldId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _nav?.setCurrentWorldId(null);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _ColoringScreenBodyState extends State<_ColoringScreenBody> {
