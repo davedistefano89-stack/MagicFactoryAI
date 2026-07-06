@@ -32,12 +32,10 @@ import '../../domain/economy/reward.dart';
 import '../../state/player_state.dart';
 import '../../utils/logger.dart' show logger;
 
-
 // ── Tier ───────────────────────────────────────────────────────────────────
 
 /// Visual tier rendered as a colour band on the achievement tile.
 enum AchievementTier { bronze, silver, gold }
-
 
 // ── PlayerSnapshot — read-only projection of PlayerState for evaluation ──
 
@@ -47,6 +45,19 @@ enum AchievementTier { bronze, silver, gold }
 /// even if PlayerState is mid-mutation in another isolate.
 @immutable
 class PlayerSnapshot {
+  /// Builds a snapshot from a live [PlayerState]. Cheap O(1) copy —
+  /// the [worldStars] map is shallow-copied so the snapshot is decoupled
+  /// from the live state.
+  factory PlayerSnapshot.fromPlayer(PlayerState player) {
+    return PlayerSnapshot(
+      coins: player.coins,
+      gems: player.gems,
+      streakDays: player.streakDays,
+      isPremium: player.isPremium,
+      worldStars: Map<String, int>.from(player.worldStars),
+      ownedWorldIds: Set<String>.from(player.ownedWorldIds),
+    );
+  }
   const PlayerSnapshot({
     required this.coins,
     required this.gems,
@@ -62,22 +73,7 @@ class PlayerSnapshot {
   final bool isPremium;
   final Map<String, int> worldStars;
   final Set<String> ownedWorldIds;
-
-  /// Builds a snapshot from a live [PlayerState]. Cheap O(1) copy —
-  /// the [worldStars] map is shallow-copied so the snapshot is decoupled
-  /// from the live state.
-  factory PlayerSnapshot.fromPlayer(PlayerState player) {
-    return PlayerSnapshot(
-      coins: player.coins,
-      gems: player.gems,
-      streakDays: player.streakDays,
-      isPremium: player.isPremium,
-      worldStars: Map<String, int>.from(player.worldStars),
-      ownedWorldIds: Set<String>.from(player.ownedWorldIds),
-    );
-  }
 }
-
 
 // ── Achievement definition ──────────────────────────────────────────────────
 
@@ -122,7 +118,6 @@ class AchievementDefinition {
   final bool Function(PlayerSnapshot snapshot) unlockCondition;
 }
 
-
 // ── Catalog of all 12 v1.0 achievements ────────────────────────────────────
 
 // Hive key for the unlocked-achievement-id list is hoisted to
@@ -138,14 +133,14 @@ class AchievementDefinition {
 // `coins: 0, gems: 0` rewards are deliberately no-op; achievements still
 // celebrate but the player doesn't see a confusing "+0" tip.
 
-final CompositeReward _firstTouchReward = CompositeReward(
+const CompositeReward _firstTouchReward = CompositeReward(
   reason: 'achievement.first_touch',
   children: <Reward>[
     CoinReward(reason: 'achievement.first_touch', amount: 10),
   ],
 );
 
-final CompositeReward _firstSaveReward = CompositeReward(
+const CompositeReward _firstSaveReward = CompositeReward(
   reason: 'achievement.first_save',
   children: <Reward>[
     CoinReward(reason: 'achievement.first_save', amount: 25),
@@ -153,14 +148,14 @@ final CompositeReward _firstSaveReward = CompositeReward(
   ],
 );
 
-final CompositeReward _crayonCuriousReward = CompositeReward(
+const CompositeReward _crayonCuriousReward = CompositeReward(
   reason: 'achievement.crayon_curious',
   children: <Reward>[
     CoinReward(reason: 'achievement.crayon_curious', amount: 15),
   ],
 );
 
-final CompositeReward _sparkleSmithReward = CompositeReward(
+const CompositeReward _sparkleSmithReward = CompositeReward(
   reason: 'achievement.sparkle_smith',
   children: <Reward>[
     CoinReward(reason: 'achievement.sparkle_smith', amount: 30),
@@ -168,14 +163,14 @@ final CompositeReward _sparkleSmithReward = CompositeReward(
   ],
 );
 
-final CompositeReward _unicornFriendReward = CompositeReward(
+const CompositeReward _unicornFriendReward = CompositeReward(
   reason: 'achievement.unicorn_friend',
   children: <Reward>[
     CoinReward(reason: 'achievement.unicorn_friend', amount: 20),
   ],
 );
 
-final CompositeReward _worldMasterReward = CompositeReward(
+const CompositeReward _worldMasterReward = CompositeReward(
   reason: 'achievement.world_master',
   children: <Reward>[
     CoinReward(reason: 'achievement.world_master', amount: 200),
@@ -183,14 +178,14 @@ final CompositeReward _worldMasterReward = CompositeReward(
   ],
 );
 
-final CompositeReward _streakThreeReward = CompositeReward(
+const CompositeReward _streakThreeReward = CompositeReward(
   reason: 'achievement.streak_three',
   children: <Reward>[
     CoinReward(reason: 'achievement.streak_three', amount: 30),
   ],
 );
 
-final CompositeReward _streakSevenReward = CompositeReward(
+const CompositeReward _streakSevenReward = CompositeReward(
   reason: 'achievement.streak_seven',
   children: <Reward>[
     CoinReward(reason: 'achievement.streak_seven', amount: 75),
@@ -198,7 +193,7 @@ final CompositeReward _streakSevenReward = CompositeReward(
   ],
 );
 
-final CompositeReward _streakThirtyReward = CompositeReward(
+const CompositeReward _streakThirtyReward = CompositeReward(
   reason: 'achievement.streak_thirty',
   children: <Reward>[
     CoinReward(reason: 'achievement.streak_thirty', amount: 300),
@@ -206,7 +201,7 @@ final CompositeReward _streakThirtyReward = CompositeReward(
   ],
 );
 
-final CompositeReward _rainbowRiderReward = CompositeReward(
+const CompositeReward _rainbowRiderReward = CompositeReward(
   reason: 'achievement.rainbow_rider',
   children: <Reward>[
     CoinReward(reason: 'achievement.rainbow_rider', amount: 60),
@@ -214,21 +209,20 @@ final CompositeReward _rainbowRiderReward = CompositeReward(
   ],
 );
 
-final CompositeReward _premiumCuriousReward = CompositeReward(
+const CompositeReward _premiumCuriousReward = CompositeReward(
   reason: 'achievement.premium_curious',
   children: <Reward>[
     CoinReward(reason: 'achievement.premium_curious', amount: 5),
   ],
 );
 
-final CompositeReward _galleryFilledReward = CompositeReward(
+const CompositeReward _galleryFilledReward = CompositeReward(
   reason: 'achievement.gallery_filled',
   children: <Reward>[
     CoinReward(reason: 'achievement.gallery_filled', amount: 100),
     GemReward(reason: 'achievement.gallery_filled', amount: 3),
   ],
 );
-
 
 // ── Evaluation helpers per achievement ────────────────────────────────────
 
@@ -237,8 +231,7 @@ final CompositeReward _galleryFilledReward = CompositeReward(
 // truth. Conditions use ONLY PlayerSnapshot fields — never PlayerState
 // directly — so the evaluation is a pure function.
 
-bool _isFirstTouchUnlocked(PlayerSnapshot s) =>
-    s.coins > 0 || s.gems > 0;
+bool _isFirstTouchUnlocked(PlayerSnapshot s) => s.coins > 0 || s.gems > 0;
 
 bool _isFirstSaveUnlocked(PlayerSnapshot s) =>
     s.worldStars.values.fold<int>(0, (int a, int b) => a + b) >= 1;
@@ -251,7 +244,8 @@ bool _isSparkleSmithUnlocked(PlayerSnapshot s) {
   // v1.0 approximation: ten quality drawings is roughly ten sparkle
   // bursts. We don't instrument per-stroke brush type yet, so we
   // approximate via the worldStars sum.
-  final int totalStars = s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
+  final int totalStars =
+      s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
   return totalStars >= 10;
 }
 
@@ -261,38 +255,32 @@ bool _isUnicornFriendUnlocked(PlayerSnapshot s) =>
 bool _isWorldMasterUnlocked(PlayerSnapshot s) =>
     s.worldStars.values.where((int stars) => stars >= 3).length >= 5;
 
-bool _isStreakThreeUnlocked(PlayerSnapshot s) =>
-    s.streakDays >= 3;
+bool _isStreakThreeUnlocked(PlayerSnapshot s) => s.streakDays >= 3;
 
-bool _isStreakSevenUnlocked(PlayerSnapshot s) =>
-    s.streakDays >= 7;
+bool _isStreakSevenUnlocked(PlayerSnapshot s) => s.streakDays >= 7;
 
-bool _isStreakThirtyUnlocked(PlayerSnapshot s) =>
-    s.streakDays >= 30;
+bool _isStreakThirtyUnlocked(PlayerSnapshot s) => s.streakDays >= 30;
 
 bool _isRainbowRiderUnlocked(PlayerSnapshot s) {
   // It's hard to know if the player covered every palette colour from
   // a sidebar view alone. v1.0 approximation: 12+ total stars across
   // all worlds implies palette breadth.
-  final int totalStars = s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
+  final int totalStars =
+      s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
   return totalStars >= 64; // very generous heuristic; tuned later.
 }
 
-bool _isPremiumCuriousUnlocked(PlayerSnapshot s) =>
-    s.isPremium;
+bool _isPremiumCuriousUnlocked(PlayerSnapshot s) => s.isPremium;
 
 bool _isGalleryFilledUnlocked(PlayerSnapshot s) =>
     s.worldStars.values.where((int stars) => stars > 0).length >= 5;
-
 
 // =============================================================================
 //  AchievementService — pure-function catalog + evaluator.
 // =============================================================================
 
-
 abstract final class AchievementService {
   AchievementService._();
-
 
   /// Single source of truth for every achievement. Built once at library
   /// load by binding the unlock-condition closures to their data.
@@ -300,12 +288,10 @@ abstract final class AchievementService {
   static final List<AchievementDefinition> _catalog =
       List<AchievementDefinition>.unmodifiable(_buildRuntimeCatalog());
 
-
   /// Returns the catalog (immutable). Visible for tests so the catalog
   /// can be introspected without re-listing ids in test fixtures.
   @visibleForTesting
   static List<AchievementDefinition> get catalog => _catalog;
-
 
   /// Looks up a definition by [id]. Returns null if the id is not in
   /// the catalog (forward-compatible: a future achievement id shipped
@@ -320,7 +306,6 @@ abstract final class AchievementService {
     return null;
   }
 
-
   /// Evaluates every catalog entry against [snapshot] and
   /// [previouslyUnlocked]. Returns the list of NEWLY-unlocked
   /// achievements (anything that passes its `unlockCondition` AND isn't
@@ -331,8 +316,7 @@ abstract final class AchievementService {
     required PlayerSnapshot snapshot,
     required Set<String> previouslyUnlocked,
   }) {
-    final List<AchievementDefinition> newlyUnlocked =
-        <AchievementDefinition>[];
+    final List<AchievementDefinition> newlyUnlocked = <AchievementDefinition>[];
     for (final AchievementDefinition def in _catalog) {
       if (previouslyUnlocked.contains(def.id)) {
         continue;
@@ -349,7 +333,6 @@ abstract final class AchievementService {
     return newlyUnlocked;
   }
 
-
   /// Hive key for the unlocked-achievement-id set. Surfaced so the
   /// persistence owner (PlayerState) can read/write the same key
   /// without re-declaring the literal in two places. The literal lives
@@ -357,7 +340,6 @@ abstract final class AchievementService {
   /// accessor for downstream readers.
   static String get hiveKey => hiveKeyUnlockedAchievementIds;
 }
-
 
 // =============================================================================
 //  Wires the unlock conditions onto the catalog (now `const`-constructible).
@@ -373,11 +355,10 @@ abstract final class AchievementService {
 // `catalog` getter above which lazily maps conditions onto the data.
 // =============================================================================
 
-
 // Build the *real* catalog on first access by binding unlock functions.
 List<AchievementDefinition> _buildRuntimeCatalog() {
   return <AchievementDefinition>[
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'first_touch',
       title: 'First Touch',
       glyph: '✏️',
@@ -386,7 +367,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _firstTouchReward,
       unlockCondition: _isFirstTouchUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'first_save',
       title: 'My First Drawing',
       glyph: '🎨',
@@ -395,7 +376,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _firstSaveReward,
       unlockCondition: _isFirstSaveUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'crayon_curious',
       title: 'Crayon Curious',
       glyph: '🖍️',
@@ -404,7 +385,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _crayonCuriousReward,
       unlockCondition: _isCrayonCuriousUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'sparkle_smith',
       title: 'Sparkle Smith',
       glyph: '✨',
@@ -413,7 +394,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _sparkleSmithReward,
       unlockCondition: _isSparkleSmithUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'unicorn_friend',
       title: 'Unicorn Friend',
       glyph: '🦄',
@@ -422,7 +403,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _unicornFriendReward,
       unlockCondition: _isUnicornFriendUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'world_master',
       title: 'World Master',
       glyph: '🏆',
@@ -431,7 +412,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _worldMasterReward,
       unlockCondition: _isWorldMasterUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'streak_three',
       title: 'Three in a Row',
       glyph: '🔥',
@@ -440,7 +421,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _streakThreeReward,
       unlockCondition: _isStreakThreeUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'streak_seven',
       title: 'Lucky Seven',
       glyph: '🍀',
@@ -449,7 +430,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _streakSevenReward,
       unlockCondition: _isStreakSevenUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'streak_thirty',
       title: 'Magical Month',
       glyph: '🌟',
@@ -458,7 +439,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _streakThirtyReward,
       unlockCondition: _isStreakThirtyUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'rainbow_rider',
       title: 'Rainbow Rider',
       glyph: '🌈',
@@ -467,7 +448,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _rainbowRiderReward,
       unlockCondition: _isRainbowRiderUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'premium_curious',
       title: 'Premium Curious',
       glyph: '👑',
@@ -476,7 +457,7 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       reward: _premiumCuriousReward,
       unlockCondition: _isPremiumCuriousUnlocked,
     ),
-    AchievementDefinition(
+    const AchievementDefinition(
       id: 'gallery_filled',
       title: 'Gallery Filled',
       glyph: '🖼️',

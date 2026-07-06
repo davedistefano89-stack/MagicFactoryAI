@@ -29,18 +29,42 @@
 //   collect telemetry on how often kids reach for it.
 // =============================================================================
 
-
 import 'package:flutter/painting.dart' show Color;
 import 'package:flutter/foundation.dart' show immutable;
 
 import '../data/palette_catalog.dart';
-
 
 /// Immutable 2-colour gradient. Disabled by default — `enabled=false`
 /// means "paint with single colour b" so the controller API stays
 /// trivially backwards-compatible with the M2.2 fill flow.
 @immutable
 final class GradientPair {
+  /// Convenience: returns a disabled pair from any single ARGB int.
+  const GradientPair.single(int value)
+      : topColorValue = value,
+        bottomColorValue = value,
+        enabled = false;
+
+  /// Convenience: returns a 2-stop pair from two ARGB ints.
+  const GradientPair.two(int a, int b)
+      : topColorValue = a,
+        bottomColorValue = b,
+        enabled = true;
+
+  /// Convenience: returns a 2-stop pair with the top stop swapped
+  /// for [newTop] while preserving the bottom stop from [previous].
+  /// Used by the controller when the user re-selects a colour
+  /// while gradient mode is enabled — keeps the bottom stop sticky
+  /// so the picker doesn't reset both stops on every tap.
+  // Not const — previous.bottomColorValue and previous.enabled
+  // are runtime values, not compile-time constants.
+  GradientPair.topOnly({
+    required int newTop,
+    required GradientPair previous,
+  })  : topColorValue = newTop,
+        bottomColorValue = previous.bottomColorValue,
+        enabled = previous.enabled;
+
   const GradientPair({
     required this.topColorValue,
     required this.bottomColorValue,
@@ -65,10 +89,16 @@ final class GradientPair {
   /// False ⇒ render as single-colour fill using [bottomColorValue].
   final bool enabled;
 
+  GradientPair.defaultPair()
+      : topColorValue =
+            PaletteCatalog.colors[14].value, // ignore: deprecated_member_use
+        bottomColorValue =
+            PaletteCatalog.colors[5].value, // ignore: deprecated_member_use
+        enabled = true;
+
   /// True iff the two colour stops differ (or the toggle is on).
   /// Painter callers use this to short-circuit single-colour draws.
-  bool get isTwoStop =>
-      enabled && topColorValue != bottomColorValue;
+  bool get isTwoStop => enabled && topColorValue != bottomColorValue;
 
   /// Returns the live [Color] for the top stop — handy for the
   /// picker chevron markers.
@@ -76,37 +106,6 @@ final class GradientPair {
 
   /// Returns the live [Color] for the bottom stop.
   Color get bottomColor => Color(bottomColorValue);
-
-  /// Convenience: returns a disabled pair from any single ARGB int.
-  static GradientPair single(int value) =>
-      GradientPair.disabled(single: value);
-
-  /// Convenience: returns a 2-stop pair from two ARGB ints.
-  static GradientPair two(int a, int b) =>
-      GradientPair(topColorValue: a, bottomColorValue: b);
-
-  /// Convenience: returns a 2-stop pair with the top stop swapped
-  /// for [newTop] while preserving the bottom stop from [previous].
-  /// Used by the controller when the user re-selects a colour
-  /// while gradient mode is enabled — keeps the bottom stop sticky
-  /// so the picker doesn't reset both stops on every tap.
-  static GradientPair topOnly({
-    required int newTop,
-    required GradientPair previous,
-  }) =>
-      GradientPair(
-        topColorValue: newTop,
-        bottomColorValue: previous.bottomColorValue,
-        enabled: previous.enabled,
-      );
-
-  /// Default pair — bright violet → golden coin-gold, sampled from
-  /// the existing palette. Designer tweakable; never persisted.
-  static GradientPair get defaultPair =>
-      GradientPair.two(
-        PaletteCatalog.colors[14].value, // cosmicPurple
-        PaletteCatalog.colors[5].value, //  coinGold
-      );
 
   @override
   bool operator ==(Object other) {
@@ -119,6 +118,5 @@ final class GradientPair {
   }
 
   @override
-  int get hashCode =>
-      Object.hash(topColorValue, bottomColorValue, enabled);
+  int get hashCode => Object.hash(topColorValue, bottomColorValue, enabled);
 }

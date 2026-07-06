@@ -29,6 +29,7 @@
 
 import 'package:flutter/material.dart';
 
+import 'package:magic_colors/core/state/player_state.dart';
 import 'package:magic_colors/core/theme/app_colors.dart';
 import 'package:magic_colors/core/theme/app_shape.dart' show AppCorner;
 import 'package:magic_colors/core/widgets/color_swatch_grid.dart';
@@ -38,12 +39,11 @@ import 'package:magic_colors/features/coloring/data/palette_catalog.dart';
 import 'package:magic_colors/features/coloring/domain/color_acl.dart';
 import 'package:magic_colors/features/coloring/domain/enums.dart';
 import 'package:magic_colors/features/coloring/widgets/gradient_picker_sheet.dart';
-
+import 'package:magic_colors/features/coloring/widgets/parent_gate_sheet.dart';
 
 /// M2.3 — Three palette tabs. `segmented` ensures the user never has
 /// to guess what tab they're looking at.
 enum PaletteTab { standard, recent, favorite }
-
 
 class ColoringPalette extends StatefulWidget {
   const ColoringPalette({
@@ -56,7 +56,6 @@ class ColoringPalette extends StatefulWidget {
   @override
   State<ColoringPalette> createState() => _ColoringPaletteState();
 }
-
 
 class _ColoringPaletteState extends State<ColoringPalette> {
   PaletteTab _active = PaletteTab.standard;
@@ -73,8 +72,7 @@ class _ColoringPaletteState extends State<ColoringPalette> {
     final PlayerStateSnapshot? player = _playerSnapshot(c);
     switch (_active) {
       case PaletteTab.standard:
-        return List<int>.generate(
-            PaletteCatalog.colors.length, (int i) => i);
+        return List<int>.generate(PaletteCatalog.colors.length, (int i) => i);
       case PaletteTab.recent:
         return List<int>.from(player?.recent ?? const <int>[]);
       case PaletteTab.favorite:
@@ -140,6 +138,10 @@ class _ColoringPaletteState extends State<ColoringPalette> {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: AppCorner.brMd,
+            // M2.4 — unified splashColor so every palette surface
+            // ripples the same colour (matches the sparkle palette).
+            splashColor: AppColors.magicPurple.withValues(alpha: 0.18),
+            highlightColor: AppColors.magicPurple.withValues(alpha: 0.08),
             onTap: () => _setActive(tab),
             child: Container(
               decoration: BoxDecoration(
@@ -179,6 +181,9 @@ class _ColoringPaletteState extends State<ColoringPalette> {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: AppCorner.brMd,
+        // M2.4 — same splash colour as the tab strip.
+        splashColor: AppColors.magicPurple.withValues(alpha: 0.18),
+        highlightColor: AppColors.magicPurple.withValues(alpha: 0.08),
         onTap: () => _showGradientSheet(context),
         child: Container(
           width: 44.0,
@@ -200,9 +205,7 @@ class _ColoringPaletteState extends State<ColoringPalette> {
           ),
           alignment: Alignment.center,
           child: Icon(
-            active
-                ? Icons.gradient_rounded
-                : Icons.gradient_outlined,
+            active ? Icons.gradient_rounded : Icons.gradient_outlined,
             color: AppColors.cloudWhite,
             size: 22.0,
           ),
@@ -241,31 +244,30 @@ class _ColoringPaletteState extends State<ColoringPalette> {
     final Set<int> selectedInTab = <int>{
       if (indexes.contains(c.selectedColorIndex)) c.selectedColorIndex,
     };
-    final Color? selectedRaw =
-        selectedInTab.isEmpty ? null : c.selectedColor;
+    final Color? selectedRaw = selectedInTab.isEmpty ? null : c.selectedColor;
     final int? selectedIndexInTab =
         selectedRaw == null ? null : colors.indexOf(selectedRaw);
     final Set<int> favoritedInTab = <int>{
       for (final int i in indexes)
-        if ((c.player?.favoriteColorIds ?? const <int>[]).contains(i))
-          i,
+        if ((c.player?.favoriteColorIds ?? const <int>[]).contains(i)) i,
     };
-
     return ColorSwatchGrid(
       colors: colors,
       selectedIndex: selectedIndexInTab,
       overlays: overlays,
       favoritedIndexes: favoritedInTab,
-      columns: PaletteCatalog.columns,
       swatchSize: PaletteCatalog.swatchSize,
       onSelect: (int idxInTab) {
         final int paletteIndex = indexes[idxInTab];
         c.setColorAt(paletteIndex);
       },
-      onLockedTap: (int paletteIndex, int coins, int stars) =>
-          _handleLockedTap(paletteIndex, coins, stars),
-      onPremiumTap: (int paletteIndex) =>
-          _handlePremiumTap(paletteIndex),
+      // M2.4 — long-press → toggle favorite via the controller.
+      onLongPress: (int idxInTab) {
+        final int paletteIndex = indexes[idxInTab];
+        c.toggleFavoriteColor(paletteIndex);
+      },
+      onLockedTap: _handleLockedTap,
+      onPremiumTap: _handlePremiumTap,
     );
   }
 
@@ -273,8 +275,7 @@ class _ColoringPaletteState extends State<ColoringPalette> {
     List<int> indexes,
     ColoringController c,
   ) {
-    final List<int> unlocked =
-        c.player?.unlockedColorIds ?? const <int>[];
+    final List<int> unlocked = c.player?.unlockedColorIds ?? const <int>[];
     return <ColorSwatchOverlay>[
       for (final int i in indexes)
         _overlayForPaletteIndex(i, unlocked, c.player?.isPremium ?? false),
@@ -287,9 +288,7 @@ class _ColoringPaletteState extends State<ColoringPalette> {
     bool isPremium,
   ) {
     if (PaletteCatalog.isPremiumIndex(paletteIndex)) {
-      return isPremium
-          ? ColorSwatchOverlay.none
-          : ColorSwatchOverlay.premium;
+      return isPremium ? ColorSwatchOverlay.none : ColorSwatchOverlay.premium;
     }
     return ColorAcl.isLocked(
       paletteIndex: paletteIndex,
@@ -338,17 +337,43 @@ class _ColoringPaletteState extends State<ColoringPalette> {
     );
   }
 
-  void _handlePremiumTap(int paletteIndex) {
-    // M2.4 polish — the actual ParentGate + ParentsArea subscription
-    // route is wired outside M2.3's surface. For now dispatch a
-    // single-fold dismissable hint.
-    showDialog<void>(
+  Future<void> _handlePremiumTap(int paletteIndex) async {
+    // M2.4 — route through the [ParentGateSheet]. On success the
+    // upsell dialog is shown; the subscription flow is reserved for
+    // a future release (parent IAP). The user only sees a celebratory
+    // dialog acknowledging Premium colours.
+    final PlayerStateSnapshot? snapshot = _playerSnapshot(widget.controller);
+    if (snapshot == null) {
+      // No PlayerState wired — fail-open so QA can still demo the
+      // surface. Production wiring always supplies a PlayerState.
+      await _showPremiumAckDialog(context, paletteIndex);
+      return;
+    }
+    final Object? rawPlayer = widget.controller.player;
+    if (rawPlayer is! PlayerState) {
+      await _showPremiumAckDialog(context, paletteIndex);
+      return;
+    }
+    final bool passed = await showParentGateSheet(
+      context: context,
+      player: rawPlayer,
+    );
+    if (!passed) return;
+    if (!mounted) return;
+    await _showPremiumAckDialog(context, paletteIndex);
+  }
+
+  Future<void> _showPremiumAckDialog(
+    BuildContext context,
+    int paletteIndex,
+  ) async {
+    await showDialog<void>(
       context: context,
       builder: (BuildContext ctx) => AlertDialog(
-        title: const Text('Premium colour'),
+        title: const Text('Premium colour activated'),
         content: const Text(
-          'Tap the gradient button to draw with Premium colours. '
-          'Ask a grown-up to upgrade!',
+          'Ask a grown-up to upgrade for the full Premium palette. '
+          'For now you can paint with the colours you have.',
         ),
         actions: <Widget>[
           TextButton(
@@ -358,8 +383,6 @@ class _ColoringPaletteState extends State<ColoringPalette> {
         ],
       ),
     );
-    // Unused parameter — include a single log to keep the analyzer
-    // quiet on `unused_local_variable`.
     assert(paletteIndex >= 0);
   }
 
@@ -395,11 +418,9 @@ class _ColoringPaletteState extends State<ColoringPalette> {
   }
 }
 
-
 // =============================================================================
 //  PlayerStateSnapshot — read-only projection used by the widget tree.
 // =============================================================================
-
 
 /// Small adapter to keep the widget tests independent of the live
 /// PlayerState (no Hive box needed). Production code never constructs
@@ -422,19 +443,14 @@ final class PlayerStateSnapshot {
   final List<int> recent;
   final List<int> unlocked;
 
-  static PlayerStateSnapshot from(Object player) {
-    // `player` is always a PlayerState at runtime. The `Object` type
-    // lets this file compile without importing PlayerState directly
-    // (which would create a cycle with the controller imports). The
-    // duck-typed getter calls below reach into PlayerState's surface.
-    final dynamic p = player;
+  factory PlayerStateSnapshot.from(PlayerState player) {
     return PlayerStateSnapshot(
-      coins: (p.coins as int),
+      coins: player.coins,
       stars: 0, // Not currently surfaced — worldId-specific.
-      isPremium: (p.isPremium as bool),
-      favorite: List<int>.from((p.favoriteColorIds as List<int>)),
-      recent: List<int>.from((p.recentColorIds as List<int>)),
-      unlocked: List<int>.from((p.unlockedColorIds as List<int>)),
+      isPremium: player.isPremium,
+      favorite: List<int>.from(player.favoriteColorIds),
+      recent: List<int>.from(player.recentColorIds),
+      unlocked: List<int>.from(player.unlockedColorIds),
     );
   }
 }

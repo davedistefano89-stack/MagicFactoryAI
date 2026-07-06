@@ -31,7 +31,6 @@ import 'package:flutter/foundation.dart' show immutable;
 
 import '../../state/player_state.dart';
 
-
 /// Sealed base type for every reward the Engine can dispense. The
 /// `reason` string is a stable analytics-friendly identifier (e.g.
 /// `"daily_chest.day_3"`, `"drawing.completed.unicorn_valley"`).
@@ -50,7 +49,6 @@ sealed class Reward {
   void grantTo(PlayerState player);
 }
 
-
 /// Awards coins. Pure data — doesn't compute or transform amounts.
 @immutable
 class CoinReward extends Reward {
@@ -66,7 +64,6 @@ class CoinReward extends Reward {
   }
 }
 
-
 /// Awards gems. Pure data — doesn't compute or transform amounts.
 @immutable
 class GemReward extends Reward {
@@ -81,7 +78,6 @@ class GemReward extends Reward {
     }
   }
 }
-
 
 /// Awards stars to a specific world. Stars are the quality metric per
 /// drawing (0..3) and the unlock currency across worlds.
@@ -103,7 +99,6 @@ class StarReward extends Reward {
     }
   }
 }
-
 
 /// Combines several rewards into a single atomic grant. The children are
 /// applied in order; an exception in any child (e.g. disk write failure)
@@ -128,4 +123,50 @@ class CompositeReward extends Reward {
   /// True iff [children] is empty. Useful for no-op tests where the
   /// engine can return an empty composite cheaply instead of throwing.
   bool get isEmpty => children.isEmpty;
+}
+
+// ============================================================================
+//  M2.4 — RewardTotalDelta extensions.
+//
+//  [ColoringController._evaluateRewardEligibility] needs to snapshot the
+//  awarded coin + gem totals so the [DrawingCompleteOverlay] can render
+//  the reward pill row without re-walking the tree. These extensions walk
+//  the sealed reward tree (composite nodes included) and sum amounts by
+//  type. Star rewards contribute 0 coins + 0 gems so they are ignored.
+// ============================================================================
+
+extension RewardTotalDelta on Reward {
+  /// Total coin amount across the entire reward tree. Reads [amount]
+  /// on every [CoinReward] encountered; recursive on [CompositeReward].
+  int get totalCoinDelta {
+    final Reward self = this;
+    if (self is CoinReward) return self.amount;
+    if (self is GemReward) return 0;
+    if (self is StarReward) return 0;
+    if (self is CompositeReward) {
+      int sum = 0;
+      for (final Reward child in self.children) {
+        sum += child.totalCoinDelta;
+      }
+      return sum;
+    }
+    return 0;
+  }
+
+  /// Total gem amount across the entire reward tree. Mirrors
+  /// [totalCoinDelta]'s shape; recursive over composite nodes.
+  int get totalGemDelta {
+    final Reward self = this;
+    if (self is CoinReward) return 0;
+    if (self is GemReward) return self.amount;
+    if (self is StarReward) return 0;
+    if (self is CompositeReward) {
+      int sum = 0;
+      for (final Reward child in self.children) {
+        sum += child.totalGemDelta;
+      }
+      return sum;
+    }
+    return 0;
+  }
 }

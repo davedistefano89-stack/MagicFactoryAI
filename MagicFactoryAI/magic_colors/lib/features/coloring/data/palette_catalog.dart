@@ -26,16 +26,13 @@
 //   matching PlayerState mutator.
 // =============================================================================
 
-
 import 'package:flutter/painting.dart' show Color;
 
 import 'package:magic_colors/core/theme/app_colors.dart';
 
-
 /// Current palette revision. Bump any time [_kPalette] is mutated.
 /// M2.3 bumps 1 → 2 (new tier-1 + tier-2 entries + Pencil brush enum).
 const int _kPaletteRevision = 2;
-
 
 /// Public read surface for the palette catalog.
 abstract final class PaletteCatalog {
@@ -85,6 +82,7 @@ abstract final class PaletteCatalog {
     if (index < 0 || index >= colors.length) {
       return 0xFF000000;
     }
+    // ignore: deprecated_member_use
     return colors[index].value;
   }
 
@@ -111,19 +109,18 @@ abstract final class PaletteCatalog {
   /// premium entries so callers can use the value unconditionally.
   static int unlockCostCoinsFor(int index) {
     if (!isLockedIndex(index)) return 0;
-    const List<int> _kCoins = <int>[100, 150, 200, 250];
-    return _kCoins[index - lockedTierStartIndex];
+    const List<int> kCoins = <int>[100, 150, 200, 250];
+    return kCoins[index - lockedTierStartIndex];
   }
 
   /// Returns the star cost to unlock [index]. Returns 0 for free /
   /// premium entries so callers can use the value unconditionally.
   static int unlockCostStarsFor(int index) {
     if (!isLockedIndex(index)) return 0;
-    const List<int> _kStars = <int>[1, 2, 3, 5];
-    return _kStars[index - lockedTierStartIndex];
+    const List<int> kStars = <int>[1, 2, 3, 5];
+    return kStars[index - lockedTierStartIndex];
   }
 }
-
 
 // =============================================================================
 //  Catalog — 32 colors.

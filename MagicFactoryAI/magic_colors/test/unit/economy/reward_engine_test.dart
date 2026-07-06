@@ -24,7 +24,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:magic_colors/core/domain/economy/reward.dart';
 import 'package:magic_colors/core/services/economy/reward_engine.dart';
 
-
 void main() {
   group('RewardEngine.computeDailyChestReward', () {
     test('throws ArgumentError when streakDays < 1', () {
@@ -89,14 +88,13 @@ void main() {
     });
 
     test('Empty CompositeReward.isEmpty is true when no children', () {
-      final CompositeReward empty = CompositeReward(
+      const CompositeReward empty = CompositeReward(
         reason: 'noop',
-        children: const <Reward>[],
+        children: <Reward>[],
       );
       expect(empty.isEmpty, true);
     });
   });
-
 
   group('RewardEngine.computeDrawingReward', () {
     test('throws on stars < 0', () {
@@ -181,7 +179,6 @@ void main() {
     });
   });
 
-
   group('RewardEngine.isCompletionEligible', () {
     test('Reject when distinctColorCount is at most 2', () {
       expect(
@@ -223,7 +220,6 @@ void main() {
       );
     });
   });
-
 
   group('RewardEngine.starsFromSignals', () {
     test('Returns 0 stars for sub-gate duration', () {

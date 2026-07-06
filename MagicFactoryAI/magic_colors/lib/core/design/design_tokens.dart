@@ -8,7 +8,7 @@
 // theme layer pulls in.
 //
 // Contents (in this file):
-//   ▸ AppSpacing       — 7-step geometric scale (4/8/16/24/32/48/64).
+//   ▸ AppSpacing       — 7-step geometric scale (4/8/16/32/48/64).
 //   ▸ AppDuration      — fast / medium / slow + named semantic presets
 //                        (splash hold, toast auto-dismiss, page transition).
 //   ▸ AppElevation     — Material-3-style z0/z1/z2/z3 catalogue of constant
@@ -26,20 +26,16 @@
 // static methods over BuildContext rather than class-level constants.
 // =============================================================================
 
-import 'package:flutter/material.dart' show
-    BoxShadow,
-    BuildContext,
-    Color,
-    Curves,
-    Duration,
-    EdgeInsets,
-    MediaQuery,
-    Offset,
-    Radius,
-    SizedBox,
-    Curve,
-    Cubic;
-
+import 'package:flutter/material.dart'
+    show
+        BuildContext,
+        Curves,
+        EdgeInsets,
+        MediaQuery,
+        Radius,
+        SizedBox,
+        Curve,
+        Cubic;
 
 // =============================================================================
 //  AppSpacing — 7-step scale (geometric, ratio ≈ 1.6).
@@ -69,7 +65,6 @@ abstract final class AppSpacing {
   /// 64 dp — between two utterly unrelated CTAs (Splash → Home breath).
   static const double xxxl = 64.0;
 
-
   // ── Semantic helpers ────────────────────────────────────────────────────
   /// Default screen-frame horizontal padding (matches the AppBar gesture
   /// inset on iPad + Android tablet side bezels).
@@ -83,7 +78,6 @@ abstract final class AppSpacing {
 
   /// Generous card padding (used by the Reward Pop-Up card body).
   static const EdgeInsets cardPaddingGenerous = EdgeInsets.all(lg);
-
 
   // ── SizedBox gap builders ──────────────────────────────────────────────
   /// Vertical 8 dp gap for Column children.
@@ -111,7 +105,6 @@ abstract final class AppSpacing {
   static const SizedBox hGapXl = SizedBox(width: xl);
 }
 
-
 // =============================================================================
 //  AppDuration — animation timing presets.
 // =============================================================================
@@ -131,7 +124,6 @@ abstract final class AppDuration {
 
   /// 540 ms — hero transitions: PLAY NOW scale-up, splash logo inflate.
   static const Duration hero = Duration(milliseconds: 540);
-
 
   // ── Named semantic presets ────────────────────────────────────────────
   /// Hold time on the Splash screen before swapping to Home.
@@ -154,60 +146,33 @@ abstract final class AppDuration {
 
   /// Rainbow shimmer cycle (Premium button hover).
   static const Duration rainbowShimmer = Duration(milliseconds: 3000);
+
+  /// PRODUCTION — Bucket-fill fade-in. Tightened from 240 → 200 ms
+  /// per playtest feedback (kids' taps were reading "soft" rather than
+  /// "PoP!"). The curve is easeOutCubic so the fill brightens
+  /// quickly to ~85 % then drifts the last 15 % into place.
+  static const Duration fillIn = Duration(milliseconds: 200);
+
+  /// M2.2 PRODUCTION — Initial alpha flash that runs alongside
+  /// [fillIn] for the first frame. Reads as "the colour slammed into
+  /// place" before the elegant ease-out takes over. Discrete (no
+  /// curve) so the painter just OR's it onto the fade-in.
+  static const Duration fillFlash = Duration(milliseconds: 60);
 }
 
-
 // =============================================================================
-//  AppElevation — Material-3-style z0/z1/z2/z3 catalogue.
+//  AppElevation REMOVED IN M2.4 HOTFIX.
+//
+//  The canonical `AppElevation` lives in `lib/core/theme/app_shape.dart`
+//  alongside `AppRadius` / `AppCorner` / `AppShapeBorder`. Both z-axis
+//  aliases (`z0..z3`) AND the M2.3 semantic names (`elevation1`,
+//  `elevation2`, `softChip`, `glowPink`, `glowYellow`, `glowPurple`)
+//  are exported from there.
+//
+//  This section is now a stub comment because the parallel definitions
+//  produced `ambiguous_import` errors for `AppElevation` across
+//  `lib/features/home/widgets/*` and `lib/core/widgets/*`.
 // =============================================================================
-
-abstract final class AppElevation {
-  const AppElevation._();
-
-  /// z0 — no shadow (used by flat surfaces, e.g. NavigationBar background).
-  static const List<BoxShadow> z0 = <BoxShadow>[];
-
-  /// z1 — light resting shadow (8 dp blur, 4 dp offset, 20 % ink).
-  /// Used by Cards at rest.
-  static const List<BoxShadow> z1 = <BoxShadow>[
-    BoxShadow(
-      color: Color(0x33000000), // 20 % ink
-      blurRadius: 8,
-      offset: Offset(0, 4),
-    ),
-  ];
-
-  /// z2 — raised shadow (12 dp + 4 dp two-layer stack, 20 % ink dominant).
-  /// Used by primary CTAs and Reward Pop-Up cards.
-  static const List<BoxShadow> z2 = <BoxShadow>[
-    BoxShadow(
-      color: Color(0x33000000), // 20 % ink
-      blurRadius: 12,
-      offset: Offset(0, 6),
-    ),
-    BoxShadow(
-      color: Color(0x19000000), // 10 % ink
-      blurRadius: 4,
-      offset: Offset(0, 2),
-    ),
-  ];
-
-  /// z3 — hero shadow (24 dp + 8 dp two-layer, 30 % ink dominant).
-  /// Used by the PLAY NOW button + Premium button when hovered.
-  static const List<BoxShadow> z3 = <BoxShadow>[
-    BoxShadow(
-      color: Color(0x4D000000), // 30 % ink
-      blurRadius: 24,
-      offset: Offset(0, 12),
-    ),
-    BoxShadow(
-      color: Color(0x33000000), // 20 % ink
-      blurRadius: 8,
-      offset: Offset(0, 4),
-    ),
-  ];
-}
-
 
 // =============================================================================
 //  AppCurves — animation easing catalogue.
@@ -235,7 +200,6 @@ abstract final class AppCurves {
   /// Linear — continuous loops, rainbow shimmer, cloud drift.
   static const Curve linear = Cubic(0.00, 0.00, 1.00, 1.00);
 
-
   // ── Domain-specific wrappers (mapped to docs/design_system/08 §3) ─────
   /// Button bounce — used by every Primary / Secondary tap feedback.
   static const Curve buttonBounce = Curves.easeOutQuad;
@@ -257,8 +221,12 @@ abstract final class AppCurves {
 
   /// Magic trail behind cursors on the Coloring canvas.
   static const Curve magicTrail = Curves.easeOut;
-}
 
+  /// M2.2 PRODUCTION — Bucket-fill primary curve. Snappy initial
+  /// speed (cubic ease-out) so a kid tap reads as a tap, not a slow
+  /// dissolve.
+  static const Curve fillIn = Curves.easeOutCubic;
+}
 
 // =============================================================================
 //  AppBreakpoints — Material 3 breakpoint widths (logical px).
@@ -286,7 +254,6 @@ abstract final class AppBreakpoints {
   static const double extraLarge = 2000.0;
 }
 
-
 // =============================================================================
 //  WindowSizeClass — what Material 3 calls the bucket for a given width.
 // =============================================================================
@@ -304,7 +271,6 @@ enum WindowSizeClass {
   large,
   extraLarge,
 }
-
 
 // =============================================================================
 //  AppResponsive — sugar over MediaQuery + AppBreakpoints.
@@ -337,8 +303,7 @@ abstract final class AppResponsive {
   /// True iff the current viewport is a phone (compact or smaller).
   static bool isCompactLike(BuildContext context) {
     final cls = sizeClassOf(context);
-    return cls == WindowSizeClass.subCompact ||
-        cls == WindowSizeClass.compact;
+    return cls == WindowSizeClass.subCompact || cls == WindowSizeClass.compact;
   }
 
   /// True iff the current viewport is a tablet or larger.
@@ -369,7 +334,6 @@ abstract final class AppResponsive {
   /// Area + body-content screens).
   static const double maxReadableContentWidth = 720.0;
 }
-
 
 // =============================================================================
 //  AppHairline — 1 dp divider stroke.

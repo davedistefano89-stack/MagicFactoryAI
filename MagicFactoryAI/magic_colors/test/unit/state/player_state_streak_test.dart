@@ -40,7 +40,6 @@ import 'package:hive/hive.dart';
 import 'package:magic_colors/core/data/hive_keys.dart';
 import 'package:magic_colors/core/state/player_state.dart';
 
-
 /// Compact builder for fresh-state PlayerState tests. Calls into a
 /// per-test Hive box so each test starts with empty persistence.
 Future<PlayerState> freshPlayer(Box<dynamic> box) async {
@@ -48,7 +47,6 @@ Future<PlayerState> freshPlayer(Box<dynamic> box) async {
   // hydrates with its default values (coins=0, gems=5, streak=0).
   return PlayerState.fromBox(box);
 }
-
 
 void main() {
   late Directory tempDir;
@@ -81,14 +79,13 @@ void main() {
     }
   });
 
-
   group('PlayerState.recordStreak — first-ever call', () {
     test('fresh state → streak = 1 and lastStreakDate is today', () async {
       final PlayerState player = await freshPlayer(box);
-      final int result = player.recordStreak(now: DateTime(2026, 7, 1, 9, 0));
+      final int result = player.recordStreak(now: DateTime(2026, 7, 1, 9));
       expect(result, 1);
       expect(player.streakDays, 1);
-      expect(player.lastStreakDate, DateTime(2026, 7, 1));
+      expect(player.lastStreakDate, DateTime(2026, 7));
     });
 
     test('first call at end-of-day computes the same calendar day', () async {
@@ -97,36 +94,32 @@ void main() {
         now: DateTime(2026, 7, 1, 23, 59, 59),
       );
       expect(result, 1);
-      expect(player.lastStreakDate, DateTime(2026, 7, 1));
+      expect(player.lastStreakDate, DateTime(2026, 7));
     });
   });
-
 
   group('PlayerState.recordStreak — same-day idempotency', () {
     test('two calls the same morning keep streak at 1', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1, 9, 0));
-      final int result =
-          player.recordStreak(now: DateTime(2026, 7, 1, 17, 30));
+      player.recordStreak(now: DateTime(2026, 7, 1, 9));
+      final int result = player.recordStreak(now: DateTime(2026, 7, 1, 17, 30));
       expect(result, 1);
       expect(player.streakDays, 1);
     });
 
     test('two calls the same day do NOT update lastStreakDate', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1, 9, 0));
+      player.recordStreak(now: DateTime(2026, 7, 1, 9));
       player.recordStreak(now: DateTime(2026, 7, 1, 23, 59));
-      expect(player.lastStreakDate, DateTime(2026, 7, 1));
+      expect(player.lastStreakDate, DateTime(2026, 7));
     });
   });
-
 
   group('PlayerState.recordStreak — day progression', () {
     test('next calendar day increments streak by 1', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1, 23, 0));
-      final int result =
-          player.recordStreak(now: DateTime(2026, 7, 2, 12, 0));
+      player.recordStreak(now: DateTime(2026, 7, 1, 23));
+      final int result = player.recordStreak(now: DateTime(2026, 7, 2, 12));
       expect(result, 2);
       expect(player.streakDays, 2);
       expect(player.lastStreakDate, DateTime(2026, 7, 2));
@@ -134,7 +127,7 @@ void main() {
 
     test('three consecutive days produce streak = 3', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1));
+      player.recordStreak(now: DateTime(2026, 7));
       player.recordStreak(now: DateTime(2026, 7, 2));
       final int result = player.recordStreak(now: DateTime(2026, 7, 3));
       expect(result, 3);
@@ -142,11 +135,10 @@ void main() {
     });
   });
 
-
   group('PlayerState.recordStreak — gaps and clock anomalies', () {
     test('gap of 2 days resets streak to 1', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1));
+      player.recordStreak(now: DateTime(2026, 7));
       player.recordStreak(now: DateTime(2026, 7, 2));
       // Skip 7/3 entirely.
       final int result = player.recordStreak(now: DateTime(2026, 7, 4));
@@ -156,7 +148,7 @@ void main() {
 
     test('long gap (7 days) resets streak to 1', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 6, 1));
+      player.recordStreak(now: DateTime(2026, 6));
       player.recordStreak(now: DateTime(2026, 6, 2));
       player.recordStreak(now: DateTime(2026, 6, 3));
       final int result = player.recordStreak(now: DateTime(2026, 6, 10));
@@ -179,14 +171,13 @@ void main() {
 
     test('forward clock drift (diff > 1 day) resets to 1', () async {
       final PlayerState player = await freshPlayer(box);
-      player.recordStreak(now: DateTime(2026, 7, 1));
+      player.recordStreak(now: DateTime(2026, 7));
       // User manually set clock to next week — diff = 6 days.
       final int result = player.recordStreak(now: DateTime(2026, 7, 7));
       expect(result, 1);
       expect(player.lastStreakDate, DateTime(2026, 7, 7));
     });
   });
-
 
   group('PlayerState.recordStreak — DST transitions', () {
     test(
@@ -234,14 +225,12 @@ void main() {
         // Conservative check: regardless of DST scheduling, a span >=
         // a "day" by calendar arithmetic increments.
         final PlayerState player = await freshPlayer(box);
-        player.recordStreak(now: DateTime(2026, 3, 7, 10, 0));
-        final int result =
-            player.recordStreak(now: DateTime(2026, 3, 8, 8, 0));
+        player.recordStreak(now: DateTime(2026, 3, 7, 10));
+        final int result = player.recordStreak(now: DateTime(2026, 3, 8, 8));
         expect(result, 2);
       },
     );
   });
-
 
   group('PlayerState.recordStreak — Hive persistence round-trip', () {
     test(
@@ -273,7 +262,7 @@ void main() {
     test(
       'persisted streak is correctly reset to 1 after gap (Day+2)',
       () async {
-        await box.put(hiveKeyLastStreakDate, DateTime(2026, 7, 1));
+        await box.put(hiveKeyLastStreakDate, DateTime(2026, 7));
         await box.put(hiveKeyStreakDays, 7);
 
         await box.close();

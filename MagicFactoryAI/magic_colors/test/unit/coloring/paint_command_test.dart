@@ -21,11 +21,10 @@ import 'package:magic_colors/features/coloring/domain/drawing.dart';
 import 'package:magic_colors/features/coloring/domain/drawing_stroke.dart';
 import 'package:magic_colors/features/coloring/domain/paint_command.dart';
 
-
 void main() {
   group('PaintCommand — DrawStroke delegation', () {
     test('id, colorValue, timestamp come from the wrapped stroke', () {
-      final stroke = DrawingStroke(
+      const stroke = DrawingStroke(
         id: 's_test',
         colorValue: 0xFFE74C3C,
         brushSize: 16.0,
@@ -34,14 +33,14 @@ void main() {
         textureSeed: 42,
         timestampMs: 1700000000000,
       );
-      final cmd = DrawStroke(stroke);
+      const cmd = DrawStroke(stroke);
       expect(cmd.id, 's_test');
       expect(cmd.colorValue, 0xFFE74C3C);
       expect(cmd.timestamp.millisecondsSinceEpoch, 1700000000000);
     });
 
     test('bounds comes from the wrapped stroke', () {
-      final stroke = DrawingStroke(
+      const stroke = DrawingStroke(
         id: 's_bounds',
         colorValue: 0,
         brushSize: 6.0,
@@ -50,7 +49,7 @@ void main() {
         textureSeed: 1,
         timestampMs: 0,
       );
-      final cmd = DrawStroke(stroke);
+      const cmd = DrawStroke(stroke);
       expect(cmd.bounds.left, lessThanOrEqualTo(10 - 6.0 * 1.5 - 8.0));
       expect(cmd.bounds.right, greaterThanOrEqualTo(50 + 6.0 * 1.5 + 8.0));
     });
@@ -63,9 +62,9 @@ void main() {
         worldId: 'unicorn_valley',
         templateGlyph: '🦄',
         name: 'Legacy',
-        createdAt: DateTime(2026, 1, 1),
-        updatedAt: DateTime(2026, 1, 1),
-        strokes: <DrawingStroke>[
+        createdAt: DateTime(2026),
+        updatedAt: DateTime(2026),
+        strokes: const <DrawingStroke>[
           DrawingStroke(
             id: 's_legacy_one',
             colorValue: 0xFF000000,
@@ -87,7 +86,7 @@ void main() {
     });
 
     test('drawing with explicit commands is returned verbatim', () {
-      final cmd = DrawStroke(
+      const cmd = DrawStroke(
         DrawingStroke(
           id: 's_already_migrated',
           colorValue: 0xFF000000,
@@ -105,7 +104,7 @@ void main() {
         name: 'Already',
         createdAt: DateTime(2026, 1, 2),
         updatedAt: DateTime(2026, 1, 2),
-        commands: <PaintCommand>[cmd],
+        commands: const <PaintCommand>[cmd],
         paletteRevision: 1,
         isDraft: false,
       );
@@ -135,21 +134,21 @@ void main() {
 
     test('returns one DrawStroke per input stroke', () {
       final strokes = <DrawingStroke>[
-        DrawingStroke(
+        const DrawingStroke(
           id: 'a',
           colorValue: 1,
           brushSize: 1,
           brushTypeIndex: 0,
-          points: const <double>[0, 0],
+          points: <double>[0, 0],
           textureSeed: 0,
           timestampMs: 0,
         ),
-        DrawingStroke(
+        const DrawingStroke(
           id: 'b',
           colorValue: 2,
           brushSize: 1,
           brushTypeIndex: 0,
-          points: const <double>[0, 0],
+          points: <double>[0, 0],
           textureSeed: 0,
           timestampMs: 0,
         ),

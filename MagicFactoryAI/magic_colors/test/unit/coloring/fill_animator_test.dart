@@ -17,21 +17,18 @@
 // =============================================================================
 
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:magic_colors/features/coloring/fill/fill_animator.dart';
 
-
 // Test-only TickerProvider. Bind to a single vsync source so each
 // test can drive the tick callback deterministically.
 class _FakeTickerProvider implements TickerProvider {
-  final Ticker _ticker;
   _FakeTickerProvider(this._ticker);
+  final Ticker _ticker;
   @override
   Ticker createTicker(TickerCallback onTick) => _ticker;
 }
-
 
 void main() {
   late Ticker ticker;

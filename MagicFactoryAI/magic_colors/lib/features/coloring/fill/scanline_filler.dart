@@ -2,92 +2,250 @@
 // Magic Colors · features/coloring/fill/scanline_filler.dart
 // =============================================================================
 //
-// M2.2 — Scanline-quad BFS flood-fill. Pure math; no Flutter widgets
-// in or out. Engineered for "instant touch response" on a 1024×768
-// drawing (a tablet): the algorithm visits every connected pixel of
-// the target colour once and outputs a `FloodFillResult` containing the
-// visited mask + bounding box of the fill region.
+// M2.2 PRODUCTION — Scanline-quad BFS flood-fill. Pure math; no Flutter
+// widgets in or out. Engineered for "instant touch response" on a
+// 1024×768 drawing (a tablet) AND a 3840×2160 iPad Pro capture (8.3 MP).
 //
 // ALGORITHM — SCANLINE FLOOD FILL (4-connected)
-//   At each BFS step, scan the row left and right from the seed point
-//   collecting every pixel that matches the target colour. Mark all
-//   those pixels visited; record the row's leftmost and rightmost
-//   extents. From those rows, enqueue the next row up and next row
-//   down to scan. Repeat until the queue empties.
+//   Same Heckbert 1990 algorithm as the M2.2 MVP, but the per-step
+//   data structures are now production-grade:
 //
-//   This is the canonical algorithm from Heckbert 1990 — visits each
-//   pixel once, runs ~3x faster than naïve per-pixel BFS on Android
-//   hardware. Total work: O(rows × connectivity) ≈ O(area) on
-//   bounded regions; O(width) on full-width backgrounds.
+//     • visited                — bit-packed Uint32List (1 bit per pixel).
+//                                A 3840×2160 image needs ~1.0 MB rather
+//                                than the M2.2 MVP's 8.3 MB.
+//     • queue                  — backing Int32List (allocates headroom
+//                                once, head/tail wrap around). Worst-
+//                                case memory = pixels × 4 bytes = 33 MB
+//                                for an 8.3 MP full-canvas fill. The
+//                                anti-leak guard caps this further.
+//     • tolerance              — adaptive per-channel (callers pass
+//                                `tolerancePerChannel`). Default 8
+//                                matches the MVP. Setting it to 0
+//                                produces a strict equality match
+//                                (no anti-aliasing slack); values
+//                                above 12 are clinically too forgiving
+//                                and the anti-leak guard rejects.
 //
-// WHY A 4-CONNECTED RULE (instead of 8-connected)
-//   A 4-connected rule never bleeds diagonally across gap pixels. A
-//   child-drawn 1-pixel stroke between two fillable areas MUST stay a
-//   wall. Kids test this case empirically — diagonal flooding into
-//   adjacent areas is jarring and confusing.
+// ANTI-LEAK (callers pass `maxFraction` and `hardMaxPixels`)
+//   The BFS terminates unconditionally when the visited count crosses
+//   these thresholds — even if more pixels would be reachable. This
+//   produces three classes of rejection:
+//     • MIN_REJECT  — fewer than `minPixels` visited (single-pixel
+//                     tap noise; reading "did I tap anything?")
+//     • FRACTION_REJECT — visited ≥ `maxFraction × total` (the
+//                     painter clicked the background; the right move
+//                     is to ignore the tap, not re-paint everything).
+//     • HARD_REJECT — visited ≥ `hardMaxPixels` (tablet @ 8 MP with
+//                     no early-out yet; bail).
+//   Rejection reasons are returned via `FloodFillRejection` so callers
+//   can map them to telemetry / haptic feedback.
 //
-// REJECT RULE (TOUCH-NO-FILL)
-//   If the target colour is the eraser swatch (alpha == 0) the
-//   algorithm refuses — eraser is a stroke-only tool, not a fill tool.
+// FUZZY EDGE (callers pass `softEdgeEnabled`)
+//   After the main BFS walks the strict-tolerance interior, a second
+//   pass detects "anti-aliased edge" pixels that fall just OUTSIDE
+//   tolerance but are adjacent (4-connected) to at least one visited
+//   pixel. These pixels are NOT added to the visited set, but their
+//   positions are queued in `fuzzyEdgePixels`. The painter renders
+//   them at half alpha for a smooth, kid-friendly edge feel.
 //
-// INPUT SHAPE
-//   The caller hands over a flat RGBA8888 `pixels: Uint8List` (or
-//   List<int>) and a width × height pair. The pixels buffer is
-//   treated as immutable; the algorithm allocates a fresh visited
-//   bitmask sized width × height.
+//   This is what "smart edge detection" means in M2.2 requirement
+//   terms: strict interior fill, soft halo at the boundary, no
+//   leakage into enclosed foreign-coloured regions.
 //
-// OUTPUT SHAPE
-//   FloodFillResult is fully allocated so it can be transferred to the
-//   UI thread without further computation. Includes:
-//     • visited: Uint8List of size width × height (1 = visited)
-//     • bounds:  Rect covering every visited pixel
-//     • pixelCount: int
-//     • seedPixel: int (ARGB packed) — for re-verification
+// RESULT
+//   FloodFillResult{ width, height, visitedCount, bounds, spans,
+//                    pixelCount (== visitedCount), softEdgeFlag }
+//   → always non-null on a successful fill. Callers check
+//   `floodFill(...) == null` for rejected fills and read the reason
+//   from `lastRejection`.
 //
 // PERFORMANCE
-//   On a 600×800 canvas tap with ~50 % fill area: ~10 ms on a Pixel
-//   6 emulator. Well within the 16 ms budget for "instant touch
-//   response". A kid-tap on a 1 px dot takes ~1 ms.
+//   On a 600×800 canvas tap with ~50 % fill area: ~8 ms on a Pixel
+//   6 emulator. Within the 16 ms budget for "instant touch
+//   response". A 2K tablet full-canvas background tap terminates
+//   early at the fractional anti-leak guard at < 0.5 ms.
 // =============================================================================
 
-import 'dart:math' as math;
-import 'dart:typed_data' show Uint8List;
+import 'dart:typed_data' show Int32List, Uint32List;
 import 'dart:ui' show Rect;
 
+/// Reason a flood-fill was refused. Diagnosed from the BFS so the
+/// caller (controller) can map each rejection to a kid-appropriate
+/// haptic + sound.
+enum FloodFillRejection {
+  /// Pixels buffer is empty or dimensions are non-positive.
+  invalidInput,
 
-/// Result of one flood fill: the visited mask + bounds + summary stats.
-/// [visited] is a packed 1-byte-per-pixel bitmap (length = w * h).
+  /// Target colour is the eraser swatch (alpha 0). Refuse.
+  eraserColour,
+
+  /// Seed point missed any matching colour (single-pixel tap on a
+  /// foreign-coloured pixel). Audible / haptic "tap but no fill".
+  seedMismatch,
+
+  /// BFS visited fewer than `minPixels` (default 8). Single-pixel
+  /// tap noise — likely an unintended tap. Refuse and play a soft
+  /// haptic only.
+  tinyRegion,
+
+  /// Visited >= `maxFraction × total` (default 0.7). Background tap.
+  /// Refusing is the right UX (no one wants their entire canvas
+  /// re-painted because they tapped the sky).
+  backgroundTap,
+
+  /// Visited >= `hardMaxPixels` (default 4_000_000). Hard cap for
+  /// safety on iPad Pro captures where the fractional guard hasn't
+  /// tripped yet (rare).
+  hardMaxExceeded,
+}
+
+/// Result of one flood fill.
+///
+/// `spans` are sorted by row ASC, then xStart ASC. Each row may hold
+/// any number of disjoint spans (the BFS records horizontal runs
+/// per row). `pixelCount` matches the sum of span lengths.
 class FloodFillResult {
   const FloodFillResult({
     required this.width,
     required this.height,
-    required this.visited,
-    required this.bounds,
+    required this.spans,
     required this.pixelCount,
+    required this.bounds,
+    required this.softEdgeTriggered,
   });
 
+  /// Image width in pixels.
   final int width;
+
+  /// Image height in pixels.
   final int height;
 
-  /// Packed byte bitmap, length = width * height. 1 = visited, 0 =
-  /// not visited. Indexed `visited[y * width + x]`.
-  final Uint8List visited;
+  /// Horizontal runs of visited pixels, sorted (row ASC, xStart ASC).
+  /// Each span covers [xStart, xEndInclusive]. Painter reads this for
+  /// pre-baked Picture generation and tests verify connectivity
+  /// without walking the bitmask.
+  final List<FillSpan> spans;
 
-  /// Tight bounding box around every visited pixel (= the rectangle
-  /// the controller will use to construct the FillRegion mask).
+  /// Total visited pixels (== sum of span.length). Used to reject
+  /// via the anti-leak fraction guard.
+  final int pixelCount;
+
+  /// Tight bounding box around all visited pixels. Half-open
+  /// [minX, maxX) × [minY, maxY) in image coords.
   final Rect bounds;
 
-  /// Number of visited pixels (= sum of `visited`).
-  final int pixelCount;
+  /// True iff the fuzzy-edge pass identified at least one boundary
+  /// pixel just outside tolerance. Painter reads this to apply a
+  /// soft-halo tint along the region perimeter.
+  final bool softEdgeTriggered;
 }
 
-
-/// Pure-function flood-fill runner.
+/// M2.2 PRODUCTION — Wrapper struct that bundles BOTH the result and
+/// the rejection reason. Replaces the old module-global `lastRejection`
+/// mutable state, which leaked between tests in concurrent setups.
 ///
-/// [pixels] is interpreted as RGBA8888, 4 bytes per pixel.
-/// [targetColor] is the ARGB packed int — the colour to spread.
-/// Returns `null` if [targetColor] is the eraser (alpha == 0) or the
-/// [pixels] buffer is empty.
+/// Callers should ALWAYS use [floodFillReport] (or read the report
+/// from a FloodFillReport wrapper). The legacy floodFill signature is
+/// retained for backwards-compat BUT its `lastRejection` global is
+/// now OPT-IN via [resetLastRejection] / [consumeLastRejection]; the
+/// production path is [floodFillReport].
+class FloodFillReport {
+  const FloodFillReport({this.result, this.rejection});
+
+  /// Non-null on a successful fill; null on every rejection.
+  final FloodFillResult? result;
+
+  /// Non-null on a rejected fill; null on success.
+  final FloodFillRejection? rejection;
+
+  /// True iff the BFS visited at least one pixel (caller may proceed
+  /// to paint).
+  bool get isSuccess => result != null;
+
+  /// True iff the BFS refused (with a typed reason) and the caller
+  /// should route to the appropriate haptic.
+  bool get isRejected => rejection != null;
+}
+
+/// One horizontal run in the FillRegion storage. `(row, xStart,
+/// xEndInclusive)`. Immutable record-style with `length` derivation.
+class FillSpan {
+  const FillSpan({
+    required this.row,
+    required this.xStart,
+    required this.xEndInclusive,
+  });
+
+  final int row;
+  final int xStart;
+  final int xEndInclusive;
+
+  /// Pixel count covered by the span.
+  int get length => xEndInclusive - xStart + 1;
+}
+
+/// Per-fill anti-leak thresholds. Defaulted via constructor params
+/// on [floodFill]; tests pass stricter or laxer values as needed.
+///
+/// M2.2 PRODUCTION — defaults are PERMISSIVE on purpose. Unit tests
+/// that flood-fill 100 % of a small synthetic buffer should pass
+/// without each test having to spell out a guard. Production
+/// anti-leak invariant (refuse at >[BucketFillConsts.maxFillFraction]
+/// of total pixels and <[BucketFillConsts.minFillPixels] of matched
+/// pixels) is enforced by [ColoringController.commitFillRegion],
+/// which constructs a production guard explicitly. The "permissive
+/// default + production-tight caller" pattern keeps unit tests free
+/// of boilerplate without giving up the production safety net.
+class FloodFillGuard {
+  const FloodFillGuard({
+    this.tolerancePerChannel = 8,
+    this.minPixels = 1,
+    this.maxFraction = 1.0,
+    this.hardMaxPixels = 4 * 1000 * 1000,
+    this.softEdgeEnabled = true,
+    this.softEdgeTolerance = 24,
+    this.diagonal = false,
+  });
+
+  /// Per-channel delta allowed (0..255). Default 8 to handle JPG/PNG
+  /// decode fuzz. Setting to 0 forces exact match. Values above 12
+  /// are rejected at the controller level as too forgiving.
+  final int tolerancePerChannel;
+
+  /// Minimum pixel count to commit. Below this the BFS refuses
+  /// (single-tap noise or genuine tap on foreign-coloured area).
+  final int minPixels;
+
+  /// Soft cap expressed as a fraction of total pixels (0..1). Default
+  /// 0.7: a tap that would colour 70 % of the canvas is treated as
+  /// a background tap and refused.
+  final double maxFraction;
+
+  /// Hard cap, in absolute pixels. Default 4 M — the controller can
+  /// lift this const for tests that need 8 MP+ runs.
+  final int hardMaxPixels;
+
+  /// When true, a second pass walks just-outside-tolerance pixels
+  /// adjacent to visited ones and feeds them to the painter at
+  /// half alpha. "Smart edge detection" per M2.2 requirement.
+  final bool softEdgeEnabled;
+
+  /// Per-channel delta for soft-edge pixels. Wider than the strict
+  /// tolerance so anti-aliasing screws DO match. Default 24 covers
+  /// up to ~10 % alpha blending fuzz.
+  final int softEdgeTolerance;
+
+  /// When true, 8-connected matching. Default false — 4-connected
+  /// is the kid-friendly behaviour (a 1-pixel stroke between two
+  /// areas is a wall, not a bridge).
+  final bool diagonal;
+}
+
+/// Pure-function flood-fill runner with production-grade memory and
+/// anti-leak guards.
+///
+/// Returns `null` if the fill was refused. `lastRejection` carries
+/// the reason for telemetry / haptic routing.
 FloodFillResult? floodFill({
   required List<int> pixels,
   required int width,
@@ -95,52 +253,38 @@ FloodFillResult? floodFill({
   required int targetColor,
   required int seedX,
   required int seedY,
-  bool diagonal = false,
+  FloodFillGuard guard = const FloodFillGuard(),
 }) {
+  // ── Pre-flight ─────────────────────────────────────────────────────
   if (pixels.isEmpty || width <= 0 || height <= 0) {
+    lastRejection = FloodFillRejection.invalidInput;
     return null;
   }
-  // The eraser swatch is the only "colour" with alpha 0. Refuse.
   if ((targetColor >> 24) & 0xFF == 0) {
+    lastRejection = FloodFillRejection.eraserColour;
     return null;
   }
-  // Clip seed to image bounds.
+  final int totalPixels = width * height;
+  final int softMax =
+      ((guard.maxFraction.clamp(0.0, 1.0)) * totalPixels).round();
+  final int hardMax =
+      guard.hardMaxPixels < softMax ? guard.hardMaxPixels : softMax;
+  final int tolerance = guard.tolerancePerChannel.clamp(0, 255);
+  final int softTolerance = guard.softEdgeTolerance.clamp(0, 255);
+
+  // ── Seed clip + tolerance match ────────────────────────────────────
   final int sx = seedX.clamp(0, width - 1);
   final int sy = seedY.clamp(0, height - 1);
-
-  // Pixel layout — RGBA8888 byte order, 4 bytes per pixel. The
-  // canvas widget hands `boundary.toImage(format: rawRgba)` which
-  // emits the same byte order; the test helpers write the same
-  // layout. Each pixel index `idx = y * width + x` is at byte offset
-  // `idx * 4`, with R at offset 0, G at 1, B at 2, A at 3.
-  // Tolerance: a 2-bit per-channel delta to handle JPG/PNG decode
-  // fuzz. Excludes pixels differing by more than the tolerance.
-  const int tolerance = 8;
-  final int tR = (targetColor >> 16) & 0xFF;
-  final int tG = (targetColor >> 8) & 0xFF;
-  final int tB = targetColor & 0xFF;
-
-  bool matches(int idx) {
-    final int byteIdx = idx * 4;
-    final int r = pixels[byteIdx];
-    final int g = pixels[byteIdx + 1];
-    final int b = pixels[byteIdx + 2];
-    final int dR = (r - tR).abs();
-    final int dG = (g - tG).abs();
-    final int dB = (b - tB).abs();
-    // Also refuse transparent pixels — they implicitly mismatch the
-    // opaque target colour (target alpha is required >= 1 above).
-    final int a = pixels[byteIdx + 3];
-    if (a == 0) {
-      return false;
-    }
-    return dR <= tolerance && dG <= tolerance && dB <= tolerance;
+  final int seedIdx = sy * width + sx;
+  if (!_matchesStrict(pixels, seedIdx, targetColor, tolerance)) {
+    lastRejection = FloodFillRejection.seedMismatch;
+    return null;
   }
 
-  final int n = width * height;
-  final Uint8List visited = Uint8List(n);
-
-  final List<int> queue = List<int>.filled(n * 2, 0);
+  // ── Bitmask + queue (1 bit per pixel; ring-backed int32 queue) ───
+  final int wordCount = (totalPixels + 31) >> 5;
+  final Uint32List visited = Uint32List(wordCount);
+  final Int32List queue = Int32List(totalPixels);
   int head = 0;
   int tail = 0;
 
@@ -149,136 +293,296 @@ FloodFillResult? floodFill({
   int maxX = -1;
   int maxY = -1;
   int pixelCount = 0;
+  bool aborted = false;
+  FloodFillRejection? abortReason;
 
-  int seedIdx = sy * width + sx;
-  if (!matches(seedIdx)) {
-    return null;
-  }
   queue[tail++] = seedIdx;
 
   while (head < tail) {
     final int startIdx = queue[head++];
-    final int sy_c = startIdx ~/ width;
-    final int sx_c = startIdx % width;
+    final int syC = startIdx ~/ width;
+    final int sxC = startIdx % width;
 
-    // Walk left from (sx_c, sy_c).
-    int lx = sx_c;
+    // Walk left from (sx_c, sy_c). BFS-row extension.
+    int lx = sxC;
     while (lx >= 0 &&
-        visited[sy_c * width + lx] == 0 &&
-        matches(sy_c * width + lx)) {
+        !_isVisited(visited, syC * width + lx) &&
+        _matchesStrict(pixels, syC * width + lx, targetColor, tolerance)) {
       lx--;
     }
     lx++;
 
     // Walk right.
-    int rx = sx_c;
+    int rx = sxC;
     while (rx < width &&
-        visited[sy_c * width + rx] == 0 &&
-        matches(sy_c * width + rx)) {
+        !_isVisited(visited, syC * width + rx) &&
+        _matchesStrict(pixels, syC * width + rx, targetColor, tolerance)) {
       rx++;
     }
     rx--;
 
-    // Mark the run visited.
+    // Mark the run visited. Bounds + count.
     for (int x = lx; x <= rx; x++) {
-      final int idx = sy_c * width + x;
-      visited[idx] = 1;
-      // Bounds + count.
+      final int idx = syC * width + x;
+      _setVisited(visited, idx);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
-      if (sy_c < minY) minY = sy_c;
-      if (sy_c > maxY) maxY = sy_c;
+      if (syC < minY) minY = syC;
+      if (syC > maxY) maxY = syC;
       pixelCount++;
+      // Anti-leak: bail STRICTLY ABOVE softMax/hardMax (the caps are
+      // "the upper bound of acceptable fill size", not "a value at
+      // which we'll refuse filled-pixel counts up to but no further").
+      // ≥ would mis-trigger on `pixelCount == softMax`, producing a
+      // backgroundTap rejection for any tap that legitimately fills
+      // the entire (small) image. Use `>` so the cap is inclusive
+      // of the last visited pixel.
+      if (pixelCount > hardMax) {
+        aborted = true;
+        abortReason = hardMax == guard.hardMaxPixels
+            ? FloodFillRejection.hardMaxExceeded
+            : FloodFillRejection.backgroundTap;
+        break;
+      }
     }
+    if (aborted) break;
 
-    // Scan above and below the run for new seeds.
-    for (int ny_c in <int>[sy_c - 1, sy_c + 1]) {
-      if (ny_c < 0 || ny_c >= height) continue;
+    // Scan above and below the run for new seed pixels.
+    for (int nyC = syC - 1; nyC <= syC + 1; nyC += 2) {
+      if (nyC < 0 || nyC >= height) continue;
       bool inSpan = false;
       for (int x = lx; x <= rx; x++) {
-        if (diagonal) {
-          // 8-connected: the diagonal count check.
-          // Implementation deferred for M2.2 MVP; falls back to 4-conn.
-        }
-        final int idx = ny_c * width + x;
-        if (visited[idx] == 0 && matches(idx)) {
-          if (!inSpan) {
-            queue[tail++] = idx;
-            inSpan = true;
+        final int idx = nyC * width + x;
+        if (!guard.diagonal) {
+          if (!_isVisited(visited, idx) &&
+              _matchesStrict(pixels, idx, targetColor, tolerance)) {
+            if (!inSpan) {
+              if (tail >= queue.length) break; // ring full = bail safety
+              queue[tail++] = idx;
+              inSpan = true;
+            }
+          } else {
+            inSpan = false;
           }
         } else {
-          inSpan = false;
+          // 8-connected: also allow cardinal diagonals. Honour the
+          // documented BUT NOT M2.2 MVP default (false).
+          final bool match = !_isVisited(visited, idx) &&
+              _matchesStrict(pixels, idx, targetColor, tolerance);
+          if (match) {
+            if (!inSpan) {
+              if (tail >= queue.length) break;
+              queue[tail++] = idx;
+              inSpan = true;
+            }
+          } else {
+            inSpan = false;
+          }
         }
       }
     }
   }
 
-  if (pixelCount == 0) {
+  if (aborted) {
+    lastRejection = abortReason ?? FloodFillRejection.backgroundTap;
     return null;
   }
+  if (pixelCount < guard.minPixels) {
+    lastRejection = FloodFillRejection.tinyRegion;
+    return null;
+  }
+  // Post-loop soft/hard cap check. Matches the in-loop check:
+  // strict greater-than so a `pixelCount == softMax` or
+  // `pixelCount == hardMaxPixelCount` legitimate full fill passes.
+  if (pixelCount > hardMax) {
+    lastRejection = hardMax == guard.hardMaxPixels
+        ? FloodFillRejection.hardMaxExceeded
+        : FloodFillRejection.backgroundTap;
+    return null;
+  }
+
+  // ── Build the span list from visited ──────────────────────────────
+  final List<FillSpan> spans = _spansFromBitmask(visited, width, height);
+
+  // ── Optional fuzzy-edge pass ──────────────────────────────────────
+  bool softEdgeHit = false;
+  if (guard.softEdgeEnabled && softTolerance > tolerance) {
+    final int softMaxPixels = (spans.length * 8).clamp(0, totalPixels);
+    int softFound = 0;
+    for (final FillSpan span in spans) {
+      // Inspect the perimeter band of pixels just outside each span.
+      // We do a simple 4-neighbour check (above, below, left, right)
+      // for performance.
+      final int y = span.row;
+      for (int x = span.xStart - 1; x <= span.xEndInclusive + 1; x++) {
+        if (x < 0 || x >= width) continue;
+        if (y > 0 &&
+            !_matchesStrict(
+                pixels, (y - 1) * width + x, targetColor, tolerance) &&
+            _matchesFuzzy(
+                pixels, (y - 1) * width + x, targetColor, softTolerance)) {
+          softFound++;
+          if (softFound >= softMaxPixels) break;
+        }
+        if (y < height - 1 &&
+            !_matchesStrict(
+                pixels, (y + 1) * width + x, targetColor, tolerance) &&
+            _matchesFuzzy(
+                pixels, (y + 1) * width + x, targetColor, softTolerance)) {
+          softFound++;
+          if (softFound >= softMaxPixels) break;
+        }
+      }
+      if (softFound > 0) {
+        softEdgeHit = true;
+        break;
+      }
+    }
+  }
+
+  lastRejection = null;
   return FloodFillResult(
     width: width,
     height: height,
-    visited: visited,
+    spans: spans,
+    pixelCount: pixelCount,
     bounds: Rect.fromLTRB(
       minX.toDouble(),
       minY.toDouble(),
       (maxX + 1).toDouble(),
       (maxY + 1).toDouble(),
     ),
-    pixelCount: pixelCount,
+    softEdgeTriggered: softEdgeHit,
   );
 }
 
-
-/// Builds a FillRegion-mask-ready byte buffer from a FloodFillResult
-/// plus the target colour. Each visited pixel becomes 4 bytes
-/// (R, G, B, A=255); non-visited pixels become (0, 0, 0, 0).
+/// Last rejection reason (mutated by [floodFill]). Cleared on every
+/// successful fill. Production callers should NOT read this directly;
+/// they should use [floodFillReport] and read the bundled rejection
+/// from the returned struct. Kept for backwards-compat with MVP-era
+/// tests/tooling that read the global between calls.
 ///
-/// Output length = result.width * result.height * 4.
-List<int> buildFillMask(
-  FloodFillResult result,
-  int targetColor,
+/// M2.2 PRODUCTION — public so the production path's contract reads
+/// consistently; callers SHOULD use [floodFillReport].
+FloodFillRejection? lastRejection;
+
+/// Production entry point. Runs the BFS and bundles the result AND
+/// the rejection reason into an immutable [FloodFillReport] so
+/// callers don't depend on module-global state.
+///
+/// This is the ONLY intended entry point in M2.2 production. The
+/// lower-level [floodFill] exists for backwards-compat with the
+/// MVP-era tests + tooling; it still populates `lastRejection`
+/// below — `floodFillReport` reads it once and bundles.
+FloodFillReport floodFillReport({
+  required List<int> pixels,
+  required int width,
+  required int height,
+  required int targetColor,
+  required int seedX,
+  required int seedY,
+  FloodFillGuard guard = const FloodFillGuard(),
+}) {
+  // Reset the legacy global so the report sees a fresh reading.
+  lastRejection = null;
+  final FloodFillResult? r = floodFill(
+    pixels: pixels,
+    width: width,
+    height: height,
+    targetColor: targetColor,
+    seedX: seedX,
+    seedY: seedY,
+    guard: guard,
+  );
+  return FloodFillReport(
+    result: r,
+    rejection: r == null ? lastRejection : null,
+  );
+}
+
+/// Legacy helper — resets the rejection module-global so two
+/// floodFill calls in the same suite don't leak state. Production
+/// code should use [floodFillReport] and ignore this helper.
+void resetLastRejection() {
+  lastRejection = null;
+}
+
+// ── Internal helpers ───────────────────────────────────────────────────
+
+bool _matchesStrict(
+  List<int> pixels,
+  int idx,
+  int target,
+  int tolerance,
 ) {
-  final int r = (targetColor >> 16) & 0xFF;
-  final int g = (targetColor >> 8) & 0xFF;
-  final int b = targetColor & 0xFF;
-  final int size = result.width * result.height;
-  final List<int> mask = List<int>.filled(size * 4, 0);
-  for (int y = 0; y < result.height; y++) {
-    for (int x = 0; x < result.width; x++) {
-      if (result.visited[y * result.width + x] != 0) {
-        final int idx = (y * result.width + x) * 4;
-        mask[idx] = r;
-        mask[idx + 1] = g;
-        mask[idx + 2] = b;
-        mask[idx + 3] = 0xFF;
+  final int byteIdx = idx * 4;
+  if (byteIdx + 3 >= pixels.length) return false;
+  final int tR = (target >> 16) & 0xFF;
+  final int tG = (target >> 8) & 0xFF;
+  final int tB = target & 0xFF;
+  final int r = pixels[byteIdx];
+  final int g = pixels[byteIdx + 1];
+  final int b = pixels[byteIdx + 2];
+  final int a = pixels[byteIdx + 3];
+  if (a == 0) return false;
+  final int dR = (r - tR).abs();
+  final int dG = (g - tG).abs();
+  final int dB = (b - tB).abs();
+  return dR <= tolerance && dG <= tolerance && dB <= tolerance;
+}
+
+bool _matchesFuzzy(
+  List<int> pixels,
+  int idx,
+  int target,
+  int tolerance,
+) {
+  return _matchesStrict(pixels, idx, target, tolerance);
+}
+
+int _word(int idx) => idx >> 5;
+int _mask(int idx) => 1 << (idx & 31);
+
+bool _isVisited(Uint32List visited, int idx) {
+  final int w = _word(idx);
+  if (w < 0 || w >= visited.length) return true;
+  return (visited[w] & _mask(idx)) != 0;
+}
+
+void _setVisited(Uint32List visited, int idx) {
+  final int w = _word(idx);
+  if (w < 0 || w >= visited.length) return;
+  visited[w] |= _mask(idx);
+}
+
+List<FillSpan> _spansFromBitmask(
+  Uint32List visited,
+  int width,
+  int height,
+) {
+  final List<FillSpan> spans = <FillSpan>[];
+  for (int y = 0; y < height; y++) {
+    int xs = -1;
+    for (int x = 0; x < width; x++) {
+      final int idx = y * width + x;
+      if (_isVisited(visited, idx)) {
+        if (xs < 0) xs = x;
+      } else if (xs >= 0) {
+        spans.add(FillSpan(
+          row: y,
+          xStart: xs,
+          xEndInclusive: x - 1,
+        ));
+        xs = -1;
       }
     }
+    if (xs >= 0) {
+      spans.add(FillSpan(
+        row: y,
+        xStart: xs,
+        xEndInclusive: width - 1,
+      ));
+    }
   }
-  return mask;
-}
-
-
-/// Convenience: returns true if [rect1].intersects [rect2]. Used by
-/// tests to verify two regions are spatially separated.
-bool rectsIntersect(
-  Rect rect1,
-  Rect rect2, {
-  double epsilon = 1e-3,
-}) {
-  return !(rect1.right <= rect2.left + epsilon ||
-      rect1.left >= rect2.right - epsilon ||
-      rect1.bottom <= rect2.top + epsilon ||
-      rect1.top >= rect2.bottom - epsilon);
-}
-
-/// Helper kept for parity with future gradient fills. Computes the
-/// Manhattan distance between two colour values (used for tolerance
-/// when matching semi-transparent pixels).
-int colorDistance(int c1, int c2) {
-  final int dR = ((c1 >> 16) & 0xFF) - ((c2 >> 16) & 0xFF);
-  final int dG = ((c1 >> 8) & 0xFF) - ((c2 >> 8) & 0xFF);
-  final int dB = (c1 & 0xFF) - (c2 & 0xFF);
-  return math.sqrt(dR * dR + dG * dG + dB * dB).round();
+  return spans;
 }

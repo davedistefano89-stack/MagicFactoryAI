@@ -37,7 +37,6 @@ import 'package:magic_colors/core/widgets/color_swatch_grid.dart';
 import 'package:magic_colors/features/coloring/coloring_controller.dart';
 import 'package:magic_colors/features/coloring/data/palette_catalog.dart';
 
-
 class GradientPickerSheet extends StatefulWidget {
   const GradientPickerSheet({
     super.key,
@@ -49,7 +48,6 @@ class GradientPickerSheet extends StatefulWidget {
   @override
   State<GradientPickerSheet> createState() => _GradientPickerSheetState();
 }
-
 
 class _GradientPickerSheetState extends State<GradientPickerSheet> {
   bool _pickingTop = true;
@@ -97,9 +95,9 @@ class _GradientPickerSheetState extends State<GradientPickerSheet> {
   }
 
   Widget _titleRow(ColoringController c) {
-    return Text(
+    return const Text(
       'Gradient',
-      style: const TextStyle(
+      style: TextStyle(
         color: AppColors.deepInk,
         fontSize: 18.0,
         fontWeight: FontWeight.w700,
@@ -184,13 +182,9 @@ class _GradientPickerSheetState extends State<GradientPickerSheet> {
         height: 36.0,
         decoration: BoxDecoration(
           borderRadius: AppCorner.brMd,
-          color: selected
-              ? AppColors.cosmicPurple
-              : AppColors.skyTouchedWhite,
+          color: selected ? AppColors.cosmicPurple : AppColors.skyTouchedWhite,
           border: Border.all(
-            color: selected
-                ? AppColors.cosmicPurple
-                : AppColors.hairlineLight,
+            color: selected ? AppColors.cosmicPurple : AppColors.hairlineLight,
           ),
         ),
         alignment: Alignment.center,
@@ -220,7 +214,6 @@ class _GradientPickerSheetState extends State<GradientPickerSheet> {
             c.setGradientBottom(value);
           }
         },
-        columns: PaletteCatalog.columns,
         swatchSize: 36.0,
       ),
     );

@@ -36,15 +36,39 @@
 // =============================================================================
 
 import 'package:flutter/foundation.dart' show immutable;
-import 'package:hive/hive.dart';
 
 import 'drawing_stroke.dart';
 import 'paint_command.dart';
 
-
 /// Immutable snapshot of one in-progress or saved drawing.
 @immutable
 class Drawing {
+  /// Empty-drawing factory used when the user lands on `/coloring/:id`
+  /// and the repo doesn't find an existing drawing for that id.
+  ///
+  /// [id] is the URL-supplied id passed by the controller — keeping it as
+  /// a parameter (rather than minting a new one) ensures that a reload of
+  /// the same URL hits the same box entry.
+  factory Drawing.fresh({
+    required String id,
+    required String worldId,
+    required String templateGlyph,
+    required String name,
+    required int paletteRevision,
+  }) {
+    final DateTime now = DateTime.now();
+    return Drawing(
+      id: id,
+      worldId: worldId,
+      templateGlyph: templateGlyph,
+      name: name,
+      createdAt: now,
+      updatedAt: now,
+      paletteRevision: paletteRevision,
+      isDraft: true,
+      commands: const <PaintCommand>[],
+    );
+  }
   const Drawing({
     required this.id,
     required this.worldId,
@@ -111,39 +135,6 @@ class Drawing {
     return commandsFromStrokes(strokes);
   }
 
-  /// Cheap uuid-v4-ish generator (same approach as DrawingStroke).
-  static String _newId() {
-    final int nowMs = DateTime.now().microsecondsSinceEpoch;
-    return 'd_${nowMs.toRadixString(16)}_$nowMs';
-  }
-
-  /// Empty-drawing factory used when the user lands on `/coloring/:id`
-  /// and the repo doesn't find an existing drawing for that id.
-  ///
-  /// [id] is the URL-supplied id passed by the controller — keeping it as
-  /// a parameter (rather than minting a new one) ensures that a reload of
-  /// the same URL hits the same box entry.
-  factory Drawing.fresh({
-    required String id,
-    required String worldId,
-    required String templateGlyph,
-    required String name,
-    required int paletteRevision,
-  }) {
-    final DateTime now = DateTime.now();
-    return Drawing(
-      id: id,
-      worldId: worldId,
-      templateGlyph: templateGlyph,
-      name: name,
-      createdAt: now,
-      updatedAt: now,
-      paletteRevision: paletteRevision,
-      isDraft: true,
-      commands: const <PaintCommand>[],
-    );
-  }
-
   /// Returns a copy with selected fields replaced. Used by
   /// `ColoringController` after each save.
   Drawing copyWith({
@@ -182,12 +173,11 @@ class Drawing {
   }
 }
 
-
 /// Wraps a legacy [strokes] list into a uniform [DrawStroke] command
 /// list. M2.2 undo/redo operates on this list directly.
 List<PaintCommand> commandsFromStrokes(List<DrawingStroke> strokes) {
   if (strokes.isEmpty) return const <PaintCommand>[];
   return List<PaintCommand>.unmodifiable(
-    strokes.map((DrawingStroke s) => DrawStroke(s)),
+    strokes.map(DrawStroke.new),
   );
 }

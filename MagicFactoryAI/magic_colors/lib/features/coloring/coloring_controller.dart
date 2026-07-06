@@ -70,16 +70,23 @@ import 'domain/enums.dart';
 import 'domain/fill_region.dart' show newFillRegionId;
 import 'domain/gradient_pair.dart';
 import 'domain/paint_command.dart';
-import 'fill/scanline_filler.dart';
+import 'fill/bucket_fill_consts.dart';
+import 'fill/scanline_filler.dart'
+    show
+        FloodFillReport,
+        FloodFillRejection,
+        FloodFillGuard,
+        FloodFillResult,
+        floodFillReport;
 import 'fill/fill_animator.dart';
+import 'painting/fill_picture_cache.dart';
+import 'painting/sparkle_trail.dart';
 import 'painting/stroke_picture_cache.dart';
-
 
 // ── Tuning constants ──────────────────────────────────────────────────
 
 const Duration _kAutoSaveDebounce = Duration(seconds: 2);
 const int _kMaxRedoStackDepth = 50;
-
 
 /// Per-session canvas controller. Constructed by `ColoringScreen` via
 /// `ChangeNotifierProvider(create: (_) => ColoringController(...))`.
@@ -93,14 +100,14 @@ class ColoringController extends ChangeNotifier {
     required this.drawingName,
     required this.vsync,
     this.player,
-  })  : _drawing = (ColoringRepository.findById(box, drawingId)
-            ?? Drawing.fresh(
-              id: drawingId,
-              worldId: worldId,
-              templateGlyph: templateGlyph,
-              name: drawingName,
-              paletteRevision: PaletteCatalog.revision,
-            ))
+  })  : _drawing = (ColoringRepository.findById(box, drawingId) ??
+                Drawing.fresh(
+                  id: drawingId,
+                  worldId: worldId,
+                  templateGlyph: templateGlyph,
+                  name: drawingName,
+                  paletteRevision: PaletteCatalog.revision,
+                ))
             .hydrate(),
         _commands = <PaintCommand>[
           ...(ColoringRepository.findById(box, drawingId)
@@ -109,8 +116,7 @@ class ColoringController extends ChangeNotifier {
               const <PaintCommand>[]),
         ],
         _name = drawingName,
-        _activeStrokeNotifier =
-            ValueNotifier<PaintCommand?>(null),
+        _activeStrokeNotifier = ValueNotifier<PaintCommand?>(null),
         fillAnimator = FillAnimator(vsync: vsync);
 
   final Box<dynamic> box;
@@ -138,8 +144,8 @@ class ColoringController extends ChangeNotifier {
   Color _selectedColor =
       PaletteCatalog.colors[PaletteCatalog.defaultSelectedColorIndex];
   double _brushSize = PaletteCatalog.defaultBrushSize;
-  BrushType _brushType = BrushType
-      .values[PaletteCatalog.defaultBrushTypeIndex.clamp(0, BrushType.values.length - 1)];
+  BrushType _brushType = BrushType.values[PaletteCatalog.defaultBrushTypeIndex
+      .clamp(0, BrushType.values.length - 1)];
   String _name; // initialised in the constructor initializer list
 
   Timer? _saveTimer;
@@ -154,11 +160,62 @@ class ColoringController extends ChangeNotifier {
   final Set<int> _usedColorsThisSession = <int>{};
   bool _rewardGrantedThisSession = false;
 
-  /// M2.1 — pre-baked Pictures of committed DrawStrokes. FillRegion
-  /// commands paint live (row-by-row) so they don't enter this cache.
-  /// Strokes are immutable, so a colour change does NOT clear the
-  /// cache — only `clear()` and `undo()` drop entries.
+  /// M2.1 — pre-baked Pictures of committed DrawStrokes. Strokes are
+  /// immutable, so a colour change does NOT clear the cache — only
+  /// `clear()` and `undo()` drop entries.
+  ///
+  /// M2.4 — the canvas painter replays cached Pictures for all
+  /// committed DrawStrokes; [endStroke] pre-bakes here at commit time
+  /// so the next frame's replay is O(1).
   final StrokePictureCache pictureCache = StrokePictureCache();
+
+  /// M2.2 PRODUCTION — pre-baked Pictures of committed FillRegions.
+  /// Replaces the old live row-by-row paintFillRegion path. Painter
+  /// replays each FillRegion via `canvas.drawPicture(pic)` after
+  /// `canvas.scale(pixelRatio)` + `canvas.translate(origin)`.
+  final FillPictureCache fillPictureCache = FillPictureCache();
+
+  /// M2.4 — per-session sparkle trail engine. Honours a reduceMotion
+  /// flag kept in sync with [SettingsState.reduceMotion] (constructor
+  /// time + lazy updates only — changing the flag mid-stroke does NOT
+  /// materialise trail particles retroactively).
+  SparkleTrail? _sparkleTrail;
+
+  /// Read-side accessor. The canvas widget subscribes its second
+  /// CustomPaint to this ChangeNotifier when the widget is mounted.
+  SparkleTrail get sparkleTrail =>
+      _sparkleTrail ??= SparkleTrail(reduceMotion: false);
+
+  /// M2.4 — flips the trail between reduced-motion flavours. The
+  /// canvas widget watches [SettingsState] and forwards the result.
+  void setSparkleReducedMotion(bool value) {
+    _sparkleTrail?.dispose();
+    _sparkleTrail = SparkleTrail(reduceMotion: value);
+  }
+
+  /// M2.4 — true once a drawing-complete reward has been granted
+  /// this session. The screen reads this on each notify to decide
+  /// whether to pop the success overlay.
+  bool _hasUnacknowledgedReward = false;
+
+  /// M2.4 — read-side gate the [ColoringScreen] watches.
+  bool get hasUnacknowledgedReward => _hasUnacknowledgedReward;
+
+  /// M2.4 — coin delta awarded by the most-recent drawing-complete
+  /// reward. Read by [DrawingCompleteOverlay] to populate the pill row.
+  int lastRewardCoinDelta = 0;
+
+  /// M2.4 — gem delta awarded by the most-recent drawing-complete
+  /// reward.
+  int lastRewardGemDelta = 0;
+
+  /// M2.4 — call after [DrawingCompleteOverlay.onDone] to clear the
+  /// unacknowledged flag so the screen stops asking for it.
+  void acknowledgeReward() {
+    if (!_hasUnacknowledgedReward) return;
+    _hasUnacknowledgedReward = false;
+    notifyListeners();
+  }
 
   /// M2.3 — gradient pair used by the Fill tool. Default-disabled;
   /// [setGradientEnabled] flips the painter's path between single
@@ -167,7 +224,6 @@ class ColoringController extends ChangeNotifier {
     PaletteCatalog.colorValueAt(PaletteCatalog.defaultSelectedColorIndex),
   );
 
-
   // ── Public read model ─────────────────────────────────────────────
 
   Drawing get drawing => _drawing;
@@ -175,8 +231,7 @@ class ColoringController extends ChangeNotifier {
   /// Read-only view of the commands list. Always returns a fresh
   /// UnmodifiableListView so consumers cannot accidentally mutate the
   /// live state.
-  List<PaintCommand> get commands =>
-      List<PaintCommand>.unmodifiable(_commands);
+  List<PaintCommand> get commands => List<PaintCommand>.unmodifiable(_commands);
 
   int get commandCount => _commands.length;
 
@@ -206,15 +261,16 @@ class ColoringController extends ChangeNotifier {
   ValueListenable<PaintCommand?> get activeStrokeListenable =>
       _activeStrokeNotifier;
 
-
   // ── Stroke lifecycle ─────────────────────────────────────────────
 
   void beginStroke(Offset localPosition) {
     unawaited(HapticFeedback.lightImpact());
     _sessionStart ??= DateTime.now();
+    // ignore: deprecated_member_use
     _usedColorsThisSession.add(_selectedColor.value);
     _activeStrokeNotifier.value = DrawStroke(
       DrawingStroke.empty(
+        // ignore: deprecated_member_use
         colorValue: _selectedColor.value,
         brushSize: _brushSize,
         brushType: _brushType,
@@ -231,12 +287,10 @@ class ColoringController extends ChangeNotifier {
     }
     final DrawingStroke stroke = current.stroke;
     if (stroke.pointCount > 0) {
-      final (double ddx, double ddy) =
-          stroke.pointAt(stroke.pointCount - 1);
+      final (double ddx, double ddy) = stroke.pointAt(stroke.pointCount - 1);
       final double dxDelta = localPosition.dx - ddx;
       final double dyDelta = localPosition.dy - ddy;
-      final double distance =
-          math.sqrt(dxDelta * dxDelta + dyDelta * dyDelta);
+      final double distance = math.sqrt(dxDelta * dxDelta + dyDelta * dyDelta);
       if (distance < 1.5) {
         return;
       }
@@ -265,61 +319,196 @@ class ColoringController extends ChangeNotifier {
     _isDirty = true;
     _scheduleAutoSave();
     unawaited(sound.play(MagicSound.paint));
+
+    // M2.4 — pre-bake the picture immediately so the next frame's
+    // paint cycle replays from cache (no path re-traversal).
+    try {
+      pictureCache.getOrBake(stroke);
+    } on Object catch (_) {
+      // best-effort: cache failures never block a stroke commit.
+    }
+
+    // M2.4 — fire sparkle burst at the lift point + a softer chased
+    // fade along the last few stroke points. Both honour reduceMotion.
+    final int n = stroke.pointCount;
+    if (n >= 2) {
+      final (double ex, double ey) = stroke.pointAt(n - 1);
+      sparkleTrail.liftBurst(
+        Offset(ex, ey),
+        color: stroke.colorValue,
+        seed: stroke.textureSeed,
+      );
+      sparkleTrail.chaseFromPath(
+        stroke.points,
+        color: stroke.colorValue,
+        seed: stroke.textureSeed + 1,
+      );
+    }
+
     notifyListeners();
   }
 
+  // ── Fill-region lifecycle (M2.2 PRODUCTION) ─────────────────────
 
-  // ── Fill-region lifecycle (M2.2) ────────────────────────────────
+  /// Tracks the SETTINGS-level reduceMotion flag. Mirrored here so
+  /// [commitFillRegion] can pass it through to [FillAnimator.start]
+  /// without re-reading SettingsState each call.
+  bool _reduceMotionForFill = false;
 
-  /// Commits a fill region from a tap point on the canvas. The
-  /// [pixels] buffer is interpreted as RGBA8888 (4 bytes per pixel).
-  /// Width × height dims are the buffer dimensions. The seed point is
-  /// in canvas coords.
+  /// M2.2 PRODUCTION — SettingsState watcher pipe. The canvas widget
+  /// calls this whenever reduceMotion flips so subsequent fills
+  /// short-circuit their fade-in if motion is reduced.
+  void setFillReducedMotion(bool value) {
+    if (_reduceMotionForFill == value) return;
+    _reduceMotionForFill = value;
+  }
+
+  /// Tracks the latest rejection from [floodFill]. Cleared on every
+  /// successful commit. The screen widget reads this for haptic
+  /// routing (a "tap but no fill" soft-pulse feels different from a
+  /// background-tap double-pulse).
+  FloodFillRejection? lastFillRejection;
+
+  /// Commits a fill region from a tap point on the canvas.
+  ///
+  /// The [pixels] buffer is interpreted as RGBA8888 (4 bytes/pixel).
+  /// [width] × [height] are the IMAGE dimensions (i.e. the snapshot
+  /// size); the [seedX] / [seedY] are likewise IMAGE coordinates.
+  /// [pixelRatio] is the devicePixelRatio the snapshot was taken at
+  /// — we store it on the resulting FillRegion so the painter can
+  /// scale-accurately replay the cached Picture.
+  ///
+  /// Anti-leak guards (per [FloodFillGuard]):
+  ///   • tinyRegion        → soft haptic only, no commit
+  ///   • backgroundTap     → stronger haptic + no commit
+  ///   • hardMaxExceeded   → logger.warn + soft haptic + no commit
+  ///
+  /// Haptic + sound + sparkle feedback fire on successful commit
+  /// only. The fill-fade-in is started after the picture is cached.
   void commitFillRegion({
     required List<int> pixels,
     required int width,
     required int height,
     required double seedX,
     required double seedY,
+    required double pixelRatio,
   }) {
     if (_brushType != BrushType.fill) {
       return;
     }
+    // ignore: deprecated_member_use
     final int seedColor = _selectedColor.value;
-    final FloodFillResult? result = floodFill(
+
+    // ── Build the anti-leak guard honoring the requested tolerance.
+    const FloodFillGuard guard = FloodFillGuard(
+      minPixels: BucketFillConsts.minFillPixels,
+      maxFraction: BucketFillConsts.maxFillFraction,
+    ); // Run BFS via the production wrapper that bundles the rejection
+    // reason into a FloodFillReport struct (no module-global lastRejection).
+    final FloodFillReport report = floodFillReport(
       pixels: pixels,
       width: width,
       height: height,
       targetColor: seedColor,
       seedX: seedX.round(),
       seedY: seedY.round(),
+      guard: guard,
     );
-    if (result == null) {
-      unawaited(HapticFeedback.lightImpact());
+    lastFillRejection = report.rejection;
+    if (!report.isSuccess) {
+      _routeFillRejectionHaptic(report.rejection);
       return;
     }
-    if (result.pixelCount == 0) {
-      return;
-    }
-    final List<int> mask = buildFillMask(result, seedColor);
-    final FillRegion region = FillRegion(
+
+    final FloodFillResult result = report.result!;
+
+    // ── Build the FillRegion. Convert image coords back to logical
+    //    using the supplied pixelRatio so the painter's cached
+    //    Picture can be scaled at draw-time.
+    //
+    //    M2.2 PRODUCTION — bridge the BFS's TIGHT bounds, not the
+    //    image's full dimensions. A 1024×768 image whose centre
+    //    512×384 was visited should commit a logicalWidth=256 region
+    //    at dpr=2, not the full 512. The cached Picture was pre-baked
+    //    in IMAGE-space anchored at `imageBounds`, so the painter's
+    //    `translate(origin).scale(pixelRatio)` remains correct.
+    final double dpr = pixelRatio <= 0 ? 1.0 : pixelRatio;
+    final Offset logicalOrigin = Offset(
+      result.bounds.left / dpr,
+      result.bounds.top / dpr,
+    );
+    final int logicalWidth = (result.bounds.width / dpr).ceil();
+    final int logicalHeight = (result.bounds.height / dpr).ceil();
+
+    final FillRegion region = FillRegion.fromSpans(
       id: newFillRegionId(),
       colorValue: seedColor,
-      mask: mask,
-      width: result.width,
-      height: result.height,
-      origin: Offset(result.bounds.left, result.bounds.top),
+      result: result,
+      logicalOrigin: logicalOrigin,
+      logicalWidth: logicalWidth,
+      logicalHeight: logicalHeight,
+      pixelRatio: dpr,
       timestamp: DateTime.now(),
     );
+
+    // Pre-bake the picture BEFORE committing to _commands. If the
+    // bake throws (rare: uhandled PictureRecorder.dispose in tests),
+    // the region is NOT committed — clean rollback. The cache owns
+    // its insertion; we look up the same Picture via id at paint time.
+    try {
+      fillPictureCache.getOrBake(region);
+    } on Object catch (error, stack) {
+      logger.error(
+        'ColoringController.fillPictureCache bake failed '
+        'id=${region.id}',
+        error: error,
+        stackTrace: stack,
+      );
+      return;
+    }
+
     _commands.add(region);
     _usedColorsThisSession.add(seedColor);
     _redoStack.clear();
     _isDirty = true;
     _scheduleAutoSave();
-    fillAnimator.start(region.id, reduceMotion: false);
+
+    fillAnimator.start(
+      region.id,
+      reduceMotion: _reduceMotionForFill,
+    );
+
+    // ── Sparkle fill-burst at the region centroid (logical coords).
+    final double centerX = logicalOrigin.dx + (logicalWidth / 2.0);
+    final double centerY = logicalOrigin.dy + (logicalHeight / 2.0);
+    sparkleTrail.fillBurst(
+      Offset(centerX, centerY),
+      color: seedColor,
+      seed: region.timestamp.microsecondsSinceEpoch,
+    );
+
     unawaited(HapticFeedback.mediumImpact());
     unawaited(sound.play(MagicSound.magicSparkle));
     notifyListeners();
+  }
+
+  /// Soft-haptic dispatcher for the various fill-rejection reasons.
+  /// Tiny / seed-mismatch → lightImpact. Background-tap / hard-cap →
+  /// mediumImpact (kid will feel "nope, try again" rather than
+  /// "acceptance").
+  void _routeFillRejectionHaptic(FloodFillRejection? reason) {
+    if (_reduceMotionForFill) return; // honour user prefs
+    switch (reason) {
+      case FloodFillRejection.invalidInput:
+      case FloodFillRejection.eraserColour:
+      case FloodFillRejection.seedMismatch:
+      case null:
+        return; // silent — these don't reach the user anyway
+      case FloodFillRejection.tinyRegion:
+      case FloodFillRejection.backgroundTap:
+      case FloodFillRejection.hardMaxExceeded:
+        unawaited(HapticFeedback.lightImpact());
+    }
   }
 
   /// Cancels the in-progress fade-in for [regionId]. Used when a fill
@@ -327,7 +516,6 @@ class ColoringController extends ChangeNotifier {
   void retireFillAnimation(String regionId) {
     fillAnimator.retire(regionId);
   }
-
 
   // ── Brush state mutators ─────────────────────────────────────────
 
@@ -350,6 +538,7 @@ class ColoringController extends ChangeNotifier {
     // the active palette index.
     if (_gradientPair.enabled) {
       _gradientPair = GradientPair.topOnly(
+        // ignore: deprecated_member_use
         newTop: next.value,
         previous: _gradientPair,
       );
@@ -386,7 +575,6 @@ class ColoringController extends ChangeNotifier {
     notifyListeners();
   }
 
-
   // ── M2.3 — gradient state ────────────────────────────────────────
 
   /// Enables / disables the gradient pairing. When enabled the painter
@@ -400,9 +588,12 @@ class ColoringController extends ChangeNotifier {
       // Seed the pair with the current selected colour on both
       // stops — the next tap on the picker sheet swaps the bottom
       // stop to a different colour.
+      // ignore: deprecated_member_use
       final int value = _selectedColor.value;
-      _gradientPair = GradientPair(topColorValue: value, bottomColorValue: value);
+      _gradientPair =
+          GradientPair(topColorValue: value, bottomColorValue: value);
     } else {
+      // ignore: deprecated_member_use
       _gradientPair = GradientPair.single(_selectedColor.value);
     }
     notifyListeners();
@@ -427,7 +618,6 @@ class ColoringController extends ChangeNotifier {
     );
     notifyListeners();
   }
-
 
   // ── M2.3 — PlayerState integration ───────────────────────────────
 
@@ -505,7 +695,6 @@ class ColoringController extends ChangeNotifier {
     unawaited(sound.play(MagicSound.magicSparkle));
   }
 
-
   // ── Undo / redo / clear ──────────────────────────────────────────
 
   void undo() {
@@ -516,6 +705,7 @@ class ColoringController extends ChangeNotifier {
     }
     if (popped is FillRegion) {
       retireFillAnimation(popped.id);
+      fillPictureCache.drop(popped.id);
     }
     if (_redoStack.length >= _kMaxRedoStackDepth) {
       _redoStack.removeAt(0);
@@ -532,7 +722,12 @@ class ColoringController extends ChangeNotifier {
     final PaintCommand cmd = _redoStack.removeLast();
     _commands.add(cmd);
     if (cmd is FillRegion) {
-      fillAnimator.start(cmd.id, reduceMotion: false);
+      try {
+        fillPictureCache.getOrBake(cmd);
+      } on Object catch (_) {
+        // best-effort: cache failure should never block a redo.
+      }
+      fillAnimator.start(cmd.id, reduceMotion: _reduceMotionForFill);
     }
     unawaited(HapticFeedback.selectionClick());
     _isDirty = true;
@@ -545,13 +740,13 @@ class ColoringController extends ChangeNotifier {
     _commands.clear();
     _redoStack.clear();
     pictureCache.clear();
+    fillPictureCache.clear();
     fillAnimator.clearAll();
     _isDirty = true;
     _scheduleAutoSave();
     unawaited(HapticFeedback.mediumImpact());
     notifyListeners();
   }
-
 
   // ── Persistence ──────────────────────────────────────────────────
 
@@ -613,12 +808,20 @@ class ColoringController extends ChangeNotifier {
     );
     reward.grantTo(playerSnapshot);
     _rewardGrantedThisSession = true;
+
+    // M2.4 — snapshot + flag the unacknowledged reward so the
+    // [DrawingCompleteOverlay] can fire after the auto-save.
+    lastRewardCoinDelta = reward.totalCoinDelta;
+    lastRewardGemDelta = reward.totalGemDelta;
+    _hasUnacknowledgedReward = true;
+
     logger.info(
       'ColoringController granted drawing reward (world=$worldId '
       'stars=$stars colors=${_usedColorsThisSession.length} '
       'commands=${_commands.length} '
       'duration=${duration.inSeconds}s)',
     );
+    notifyListeners();
   }
 
   void forceSave() {
@@ -633,7 +836,10 @@ class ColoringController extends ChangeNotifier {
     _saveTimer?.cancel();
     _activeStrokeNotifier.dispose();
     pictureCache.clear();
+    fillPictureCache.clear();
     fillAnimator.dispose();
+    _sparkleTrail?.dispose();
+    _sparkleTrail = null;
     super.dispose();
   }
 }

@@ -68,3 +68,10 @@ htmlcov/
 .env
 .env.*
 *.zip
+
+# ── One-off preview artifacts ────────────────────────────────────────
+# `iphone_preview.html` is a hand-crafted HTML preview produced by
+# `tools/dev/make_iphone_preview.py` to inspect a single screen in
+# Chrome. It's a scratch artifact, not part of the repo — re-generate
+# from source when needed.
+iphone_preview.html

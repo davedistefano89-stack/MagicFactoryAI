@@ -54,7 +54,7 @@
 // =============================================================================
 
 import 'dart:async';
-import 'dart:ui' as ui show Image, ImageByteFormat;
+import 'dart:ui' as ui show Image, Picture;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -67,21 +67,21 @@ import 'package:magic_colors/features/coloring/coloring_controller.dart';
 import 'package:magic_colors/features/coloring/domain/drawing_stroke.dart';
 import 'package:magic_colors/features/coloring/domain/enums.dart';
 import 'package:magic_colors/features/coloring/domain/paint_command.dart';
+import 'package:magic_colors/features/coloring/fill/bucket_fill_consts.dart';
 import 'package:magic_colors/features/coloring/fill/fill_animator.dart';
 import 'package:magic_colors/features/coloring/painting/brush_painter.dart';
+import 'package:magic_colors/features/coloring/painting/fill_picture_cache.dart';
+import 'package:magic_colors/features/coloring/painting/sparkle_trail.dart';
 import 'package:magic_colors/features/coloring/painting/stroke_picture_cache.dart';
 import 'package:magic_colors/features/coloring/painting/stroke_smoother.dart';
 import 'package:magic_colors/features/coloring/state/view_transform_controller.dart';
-
 
 // ── Tuning constants ────────────────────────────────────────────────────
 
 const double _kTemplateGlyphAlpha = 0.10;
 const double _kTemplateGlyphCapFraction = 0.55;
 
-
 enum _GestureMode { idle, painting, pinching, fill }
-
 
 class ColoringCanvas extends StatefulWidget {
   const ColoringCanvas({
@@ -99,7 +99,6 @@ class ColoringCanvas extends StatefulWidget {
   State<ColoringCanvas> createState() => _ColoringCanvasState();
 }
 
-
 class _ColoringCanvasState extends State<ColoringCanvas> {
   final Set<int> _activePointers = <int>{};
   final Map<int, Offset> _pointerPositions = <int, Offset>{};
@@ -115,7 +114,6 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
   final GlobalKey _paintBoundaryKey = GlobalKey(debugLabel: 'paintBoundary');
 
   _GestureMode _mode = _GestureMode.idle;
-
 
   // ── Pointer handlers ────────────────────────────────────────────────
 
@@ -154,8 +152,7 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
     if (_mode == _GestureMode.fill) {
       return; // fill is tap-only
     }
-    if (_mode == _GestureMode.painting &&
-        event.pointer == _paintPointer) {
+    if (_mode == _GestureMode.painting && event.pointer == _paintPointer) {
       widget.controller.updateStroke(event.localPosition);
       return;
     }
@@ -172,8 +169,7 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
       _mode = _GestureMode.idle;
       return;
     }
-    if (_mode == _GestureMode.painting &&
-        event.pointer == _paintPointer) {
+    if (_mode == _GestureMode.painting && event.pointer == _paintPointer) {
       _paintPointer = null;
       _mode = _GestureMode.idle;
       widget.controller.endStroke();
@@ -194,8 +190,7 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
       _mode = _GestureMode.idle;
       return;
     }
-    if (_mode == _GestureMode.painting &&
-        event.pointer == _paintPointer) {
+    if (_mode == _GestureMode.painting && event.pointer == _paintPointer) {
       _paintPointer = null;
       _mode = _GestureMode.idle;
       widget.controller.endStroke();
@@ -209,12 +204,17 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
     }
   }
 
-
-  // ── Fill-tap pipeline ──────────────────────────────────────────────
+  // ── Fill-tap pipeline (M2.2 PRODUCTION) ─────────────────────────────
 
   /// Snapshots the inner RepaintBoundary to a ui.Image, extracts the
   /// RGBA8888 bytes, and forwards them to
   /// [ColoringController.commitFillRegion].
+  ///
+  /// Tablet support: the snapshot uses [MediaQuery.devicePixelRatioOf]
+  /// so a tap on an iPad Pro @ 3x maps to the exact image pixel rather
+  /// than the 1x under-sized default. The controller stores the
+  /// devicePixelRatio on the FillRegion so the painter can scale the
+  /// cached Picture during replay.
   Future<void> _handleFillTap(Offset localPosition) async {
     final RenderRepaintBoundary? boundary = _paintBoundaryKey.currentContext
         ?.findRenderObject() as RenderRepaintBoundary?;
@@ -224,30 +224,45 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
       );
       return;
     }
-    // Image dimensions equal the boundary's size.
-    final ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+    // M2.2 PRODUCTION — honour the actual devicePixelRatio (iPad Pro
+    // @ 3x, Galaxy Tab @ 2x, etc.). Without this the seed coords map
+    // to the wrong image pixel and the BFS misses the tapped region
+    // on high-DPI tablets.
+    final double pixelRatio = MediaQuery.devicePixelRatioOf(context);
+    // Pipe reduceMotion to the controller so commitFillRegion can
+    // short-circuit the fade-in.
+    widget.controller.setFillReducedMotion(
+      context.read<SettingsState>().reduceMotion,
+    );
+    // Image dimensions = boundary.size × pixelRatio.
+    final ui.Image image = await boundary.toImage(
+      pixelRatio: pixelRatio,
+    );
     try {
-      final ByteData? byteData = await image.toByteData(
-        format: ui.ImageByteFormat.rawRgba,
-      );
+      final ByteData? byteData = await image.toByteData();
       if (byteData == null) {
         logger.warn('ColoringCanvas._handleFillTap: byteData is null');
         return;
       }
       // Convert Uint8List → List<int> for the controller API.
       final List<int> pixels = byteData.buffer.asUint8List();
+
+      // Convert LOGICAL (canvas) seed coords to IMAGE coords by
+      // multiplying by pixelRatio. The BFS operates in IMAGE space.
+      final double seedX = localPosition.dx * pixelRatio;
+      final double seedY = localPosition.dy * pixelRatio;
       widget.controller.commitFillRegion(
         pixels: pixels,
         width: image.width,
         height: image.height,
-        seedX: localPosition.dx.clamp(0, image.width - 1).toDouble(),
-        seedY: localPosition.dy.clamp(0, image.height - 1).toDouble(),
+        seedX: seedX.clamp(0, image.width - 1).toDouble(),
+        seedY: seedY.clamp(0, image.height - 1).toDouble(),
+        pixelRatio: pixelRatio,
       );
     } finally {
       image.dispose();
     }
   }
-
 
   // ── Pinch math ──────────────────────────────────────────────────────
 
@@ -291,47 +306,68 @@ class _ColoringCanvasState extends State<ColoringCanvas> {
     _pinchLastDistance = distance;
   }
 
-
   // ── Build ───────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final SettingsState settings = context.watch<SettingsState>();
     final ColoringController controller = widget.controller;
-    final ViewTransformController view = context.watch<ViewTransformController>();
+    final ViewTransformController view =
+        context.watch<ViewTransformController>();
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         final Size canvasSize = constraints.biggest;
         view.setCanvasSize(canvasSize);
+        // M2.4 — push reduceMotion into the trail; flip is cheap.
+        if (controller.sparkleTrail.reduceMotion != settings.reduceMotion) {
+          controller.setSparkleReducedMotion(settings.reduceMotion);
+        }
         return Transform(
           transform: view.matrix,
-          child: RepaintBoundary(
-            key: _paintBoundaryKey,
-            child: Listener(
-              behavior: HitTestBehavior.opaque,
-              onPointerDown: _onPointerDown,
-              onPointerMove: _onPointerMove,
-              onPointerUp: _onPointerUp,
-              onPointerCancel: _onPointerCancel,
-              child: CustomPaint(
-                painter: _M21CanvasPainter(
-                  commands: controller.commands,
-                  pictureCache: controller.pictureCache,
-                  activeStrokeListenable: controller.activeStrokeListenable,
-                  templateGlyph: controller.drawing.templateGlyph,
-                  reduceMotion: settings.reduceMotion,
-                  fillAnimator: controller.fillAnimator,
+          child: Stack(
+            children: <Widget>[
+              RepaintBoundary(
+                key: _paintBoundaryKey,
+                child: Listener(
+                  behavior: HitTestBehavior.opaque,
+                  onPointerDown: _onPointerDown,
+                  onPointerMove: _onPointerMove,
+                  onPointerUp: _onPointerUp,
+                  onPointerCancel: _onPointerCancel,
+                  child: CustomPaint(
+                    painter: _M21CanvasPainter(
+                      commands: controller.commands,
+                      pictureCache: controller.pictureCache,
+                      fillPictureCache: controller.fillPictureCache,
+                      activeStrokeListenable: controller.activeStrokeListenable,
+                      templateGlyph: controller.drawing.templateGlyph,
+                      reduceMotion: settings.reduceMotion,
+                      fillAnimator: controller.fillAnimator,
+                    ),
+                    size: Size.infinite,
+                  ),
                 ),
-                size: Size.infinite,
               ),
-            ),
+              // M2.4 — sparkle trail overlay. Sits above the canvas
+              // but below any future overlays. The painter reads the
+              // trail's interpolated positions on every tick.
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _SparkleTrailPainter(
+                      trail: controller.sparkleTrail,
+                    ),
+                    size: Size.infinite,
+                  ),
+                ),
+              ),
+            ],
           ),
         );
       },
     );
   }
 }
-
 
 // =============================================================================
 //  _M21CanvasPainter — paint logic.
@@ -347,6 +383,7 @@ class _M21CanvasPainter extends CustomPainter {
   _M21CanvasPainter({
     required this.commands,
     required this.pictureCache,
+    required this.fillPictureCache,
     required this.activeStrokeListenable,
     required this.templateGlyph,
     required this.reduceMotion,
@@ -359,6 +396,7 @@ class _M21CanvasPainter extends CustomPainter {
 
   final List<PaintCommand> commands;
   final StrokePictureCache pictureCache;
+  final FillPictureCache fillPictureCache;
   final ValueListenable<PaintCommand?> activeStrokeListenable;
   final String templateGlyph;
   final bool reduceMotion;
@@ -372,16 +410,24 @@ class _M21CanvasPainter extends CustomPainter {
       _paintTemplate(canvas, size, templateGlyph);
     }
 
-    // Layer 2 — committed commands. Each dispatches via paintCommand;
-    // FillRegion alpha is multiplied by the FillAnimator's progress.
+    // ── Layer 2 — committed commands. DrawStroke replays from
+    // StrokePictureCache; FillRegion replays from FillPictureCache
+    // with a saveLayer for alpha-modulated fade-in.
     for (final PaintCommand c in commands) {
-      final double alpha = _alphaFor(c);
-      _brush.paintCommand(
-        canvas,
-        c,
-        reduceMotion: reduceMotion,
-        alphaMultiplier: alpha,
-      );
+      if (c is DrawStroke) {
+        final ui.Picture pic =
+            pictureCache.getOrBake(c.stroke, reduceMotion: reduceMotion);
+        final bounds4 = strokeBounds(c.stroke);
+        canvas.save();
+        canvas.translate(bounds4.minX, bounds4.minY);
+        canvas.drawPicture(pic);
+        canvas.restore();
+        continue;
+      }
+      if (c is FillRegion) {
+        _paintFillRegionCached(canvas, c);
+        continue;
+      }
     }
 
     // Layer 3 — actively-painting stroke with smoothing.
@@ -391,20 +437,72 @@ class _M21CanvasPainter extends CustomPainter {
     }
   }
 
+  /// M2.2 PRODUCTION — render a committed [FillRegion] with fade-in.
+  ///
+  /// Strategy ("Path A" — see code-review decision log in M2.2):
+  ///   * During the 240ms fade-in (and the 60ms flash pulse), the
+  ///     animation's `finalAlpha < 1.0`. We render the region using
+  ///     the live spans-aware path in [BrushPainter.paintFillRegion],
+  ///     which applies the alpha directly to the stamp paints. This
+  ///     is O(N spans) but only runs for ~14 frames during the
+  ///     animation window — the transient CPU cost is acceptable
+  ///     and avoids ANY offscreen saveLayer texture per fill per
+  ///     frame.
+  ///   * Once `finalAlpha >= 1.0` the animation has finished; we
+  ///     snap to the cached `ui.Picture` and replay it with a
+  ///     zero-cost `drawPicture` — this is the O(1) steady-state.
+  ///
+  /// Why not `canvas.drawPicture(pic, alphaPaint)`? Skia's
+  /// `drawPicture` accepts a hint `Paint`, but the hint's
+  /// `color.alpha` is NOT used as a multiplier on the picture's
+  /// recorded alphas (only `blendMode` and `colorFilter` are
+  /// honoured as transfer hints). Since the cached picture was
+  /// recorded at full alpha, the hint paint would have been a
+  /// silent no-op, breaking the fade-in.
+  void _paintFillRegionCached(Canvas canvas, FillRegion region) {
+    final double progress = fillAnimator.progressFor(region.id);
+    if (progress <= 0.0) {
+      return; // first frame hasn't started yet
+    }
+    final bool flashing = fillAnimator.isFlashing(region.id);
+    final double baseAlpha = progress.clamp(0.0, 1.0);
+    final double flashAlpha = flashing ? BucketFillConsts.fillFlashAlpha : 0.0;
+    // Combine via max — the flash is a one-shot punch, the fade is
+    // the long-tail curve. Reading `max` rather than `+` keeps the
+    // region from going over 1.0 alpha while still hitting the
+    // flash target on the first frame.
+    final double finalAlpha = baseAlpha > flashAlpha ? baseAlpha : flashAlpha;
+
+    if (finalAlpha >= 1.0) {
+      // STEADY-STATE — replay the cached `ui.Picture` at full alpha.
+      // getOrBake is non-nullable: it returns the cached Picture or
+      // bakes a fresh one on miss, so there is no null branch.
+      final ui.Picture pic = fillPictureCache.getOrBake(region);
+      canvas.save();
+      canvas.translate(region.origin.dx, region.origin.dy);
+      canvas.scale(region.pixelRatio, region.pixelRatio);
+      canvas.drawPicture(pic);
+      canvas.restore();
+      return;
+    }
+
+    // FADE-IN PATH — alpha < 1.0, OR cache miss. Use the
+    // spans-aware live path: paint.alpha carries the modulation
+    // directly to the framebuffer, no offscreen layer needed.
+    _brush.paintFillRegion(
+      canvas,
+      region,
+      alphaMultiplier: finalAlpha,
+    );
+  }
+
   @override
   bool shouldRepaint(covariant _M21CanvasPainter old) {
     return old.commands != commands ||
         old.templateGlyph != templateGlyph ||
+        old.fillPictureCache != fillPictureCache ||
         old.reduceMotion != reduceMotion;
   }
-
-  double _alphaFor(PaintCommand c) {
-    if (c is FillRegion) {
-      return fillAnimator.progressFor(c.id);
-    }
-    return 1.0;
-  }
-
 
   // ── Layer helpers ───────────────────────────────────────────────────
 
@@ -439,4 +537,37 @@ class _M21CanvasPainter extends CustomPainter {
     );
     _brush.paint(canvas, faux, reduceMotion: reduceMotion);
   }
+}
+
+// =============================================================================
+//  _SparkleTrailPainter — paints the active particle list interpolated
+//  against the wall-clock. Reads the trail's ChangeNotifier as repaint
+//  source so lift bursts + chased fades in lockstep with the controller's
+//  endStroke / commitFill events.
+// =============================================================================
+
+class _SparkleTrailPainter extends CustomPainter {
+  _SparkleTrailPainter({required this.trail}) : super(repaint: trail);
+
+  final SparkleTrail trail;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    // Pump the trail (it removes expired particles internally) so the
+    // next notifyListeners() also throttles when the list goes empty.
+    trail.tick(nowMs);
+    final List<({Offset position, double alpha, double radius, int color})>
+        snapshot = trail.snapshotFor(nowMs);
+    if (snapshot.isEmpty) return;
+    final Paint paint = Paint()..style = PaintingStyle.fill;
+    for (final ({Offset position, double alpha, double radius, int color}) p
+        in snapshot) {
+      paint.color = Color(p.color).withValues(alpha: p.alpha);
+      canvas.drawCircle(p.position, p.radius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparkleTrailPainter old) => old.trail != trail;
 }

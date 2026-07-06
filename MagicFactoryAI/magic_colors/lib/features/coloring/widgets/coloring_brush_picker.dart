@@ -15,21 +15,27 @@ import 'package:flutter/material.dart';
 
 import 'package:magic_colors/core/design/design_tokens.dart';
 import 'package:magic_colors/core/theme/app_colors.dart';
-import 'package:magic_colors/core/theme/app_shape.dart' show AppCorner, AppElevation;
+import 'package:magic_colors/core/theme/app_shape.dart' as shape_lib;
 import 'package:magic_colors/core/theme/app_typography.dart';
 import 'package:magic_colors/core/utils/haptics.dart';
+// M2.4 — InkSparkle splash factory is exposed through
+// package:flutter/material.dart as a static getter.
 
 import 'package:magic_colors/features/coloring/coloring_controller.dart';
 import 'package:magic_colors/features/coloring/domain/enums.dart';
-
 
 /// Brush-type labels. Mirrors [BrushType] in declaration order.
 /// M2.2 appends `BrushType.fill` (6 entries). M2.3 appends `pencil`
 /// (7 entries total).
 const List<String> _kBrushLabels = <String>[
-  'Round', 'Marker', 'Crayon', 'Sparkle', 'Eraser', 'Fill', 'Pencil',
+  'Round',
+  'Marker',
+  'Crayon',
+  'Sparkle',
+  'Eraser',
+  'Fill',
+  'Pencil',
 ];
-
 
 class ColoringBrushPicker extends StatelessWidget {
   const ColoringBrushPicker({
@@ -68,7 +74,6 @@ class ColoringBrushPicker extends StatelessWidget {
   }
 }
 
-
 class _BrushTypeRow extends StatelessWidget {
   const _BrushTypeRow({
     required this.selectedIndex,
@@ -92,12 +97,17 @@ class _BrushTypeRow extends StatelessWidget {
             selected: i == selectedIndex,
             label: Text(_kBrushLabels[i]),
             labelStyle: AppTypography.labelMd.copyWith(
-              color: i == selectedIndex ? AppColors.cloudWhite : AppColors.deepInk,
+              color:
+                  i == selectedIndex ? AppColors.cloudWhite : AppColors.deepInk,
             ),
             selectedColor: AppColors.magicPurple,
             backgroundColor: AppColors.cloudWhite,
+            // M2.4 — unified splash tint is handled at the theme
+            // level (see AppTheme.elevatedButtonTheme / chipTheme).
+            // ChoiceChip without an explicit splashFactory falls
+            // back to the Material InkSparkle preset.
             shape: RoundedRectangleBorder(
-              borderRadius: AppCorner.brMd,
+              borderRadius: shape_lib.AppCorner.brMd,
               side: BorderSide(
                 color: i == selectedIndex
                     ? AppColors.magicPurple
@@ -112,7 +122,6 @@ class _BrushTypeRow extends StatelessWidget {
     );
   }
 }
-
 
 class _BrushSizeRow extends StatelessWidget {
   const _BrushSizeRow({
@@ -130,7 +139,6 @@ class _BrushSizeRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
         children: <Widget>[
           _BrushSizePreview(size: sizeDp, color: color),
           AppSpacing.hGapMd,
@@ -142,7 +150,8 @@ class _BrushSizeRow extends StatelessWidget {
                   enabledThumbRadius: 12.0,
                   pressedElevation: 3.0,
                 ),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 18.0),
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 18.0),
               ),
               child: Slider(
                 min: 4.0,
@@ -156,7 +165,7 @@ class _BrushSizeRow extends StatelessWidget {
           SizedBox(
             width: 32.0,
             child: Text(
-              '${sizeDp.toStringAsFixed(0)}',
+              sizeDp.toStringAsFixed(0),
               textAlign: TextAlign.right,
               style: AppTypography.bodySm.copyWith(color: AppColors.smoke),
             ),
@@ -166,7 +175,6 @@ class _BrushSizeRow extends StatelessWidget {
     );
   }
 }
-
 
 class _BrushSizePreview extends StatelessWidget {
   const _BrushSizePreview({required this.size, required this.color});
@@ -187,13 +195,10 @@ class _BrushSizePreview extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: color,
-            boxShadow: AppElevation.softChip,
+            boxShadow: shape_lib.AppElevation.softChip,
           ),
         ),
       ),
     );
   }
 }
-
-
-

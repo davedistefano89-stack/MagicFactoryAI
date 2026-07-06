@@ -29,7 +29,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart' show GoRouter;
 import 'package:provider/provider.dart';
 
-import 'package:magic_colors/core/routing/app_router.dart' show GoRouterContextX;
+import 'package:magic_colors/core/routing/app_router.dart'
+    show GoRouterContextX;
 import 'package:magic_colors/core/services/sound_service.dart';
 import 'package:magic_colors/core/services/storage_service.dart';
 import 'package:magic_colors/core/state/settings_state.dart';
@@ -43,7 +44,7 @@ import 'widgets/coloring_canvas.dart';
 import 'widgets/coloring_palette.dart';
 import 'widgets/coloring_toolbar.dart';
 import 'widgets/coloring_top_bar.dart';
-
+import 'widgets/drawing_complete_overlay.dart';
 
 // ── Catalog of starter drawings keyed by the :id URL param. ────────────
 
@@ -57,7 +58,8 @@ class _StarterDrawing {
   final String title;
 }
 
-const Map<String, _StarterDrawing> _kStarterDrawings = <String, _StarterDrawing>{
+const Map<String, _StarterDrawing> _kStarterDrawings =
+    <String, _StarterDrawing>{
   'draw-now': _StarterDrawing('world_default', '🦄', 'Untitled drawing'),
   'unicorn_default': _StarterDrawing(
     'unicorn_valley',
@@ -85,7 +87,6 @@ _StarterDrawing _resolveStarter(String drawingId) {
       );
 }
 
-
 // =============================================================================
 //  ColoringScreen.
 // =============================================================================
@@ -104,7 +105,6 @@ class ColoringScreen extends StatefulWidget {
   @override
   State<ColoringScreen> createState() => _ColoringScreenState();
 }
-
 
 class _ColoringScreenState extends State<ColoringScreen>
     with TickerProviderStateMixin {
@@ -136,13 +136,22 @@ class _ColoringScreenState extends State<ColoringScreen>
   }
 }
 
-
 // =============================================================================
 //  _ColoringScreenBody — lays out chrome around the canvas.
 // =============================================================================
 
-class _ColoringScreenBody extends StatelessWidget {
+class _ColoringScreenBody extends StatefulWidget {
   const _ColoringScreenBody();
+
+  @override
+  State<_ColoringScreenBody> createState() => _ColoringScreenBodyState();
+}
+
+class _ColoringScreenBodyState extends State<_ColoringScreenBody> {
+  /// Set to true after we've already shown this session's
+  /// [DrawingCompleteOverlay]; ensures we don't pop a second overlay
+  /// for the same reward.
+  bool _rewardShownThisSession = false;
 
   void _onBack(BuildContext context) {
     final ColoringController controller = context.read<ColoringController>();
@@ -156,7 +165,45 @@ class _ColoringScreenBody extends StatelessWidget {
       router.pop();
       return;
     }
+    // Out-of-shell takeover route: /coloring/:id is a top-level push
+    // route, NOT a descendant of `_BranchScaffold`. The
+    // `StatefulNavigationShell` Provider is therefore not in this
+    // widget's context tree, so `selectShellTab` + `goShellTab` would
+    // throw `ProviderNotFoundException`. Keep the bare
+    // `context.goWorlds()` — GoRouter handles the transition by
+    // building the StatefulShellRoute, which mounts a fresh shell
+    // and the Worlds-tab root. If preserving the prior Worlds-stack
+    // from this entry point ever matters, lift the shell Provider into
+    // the app shell (`lib/app.dart`) so every screen can read it.
+    // ignore: shell_branch_nav (out-of-shell deep-link recovery —
+    // /coloring/:id is a top-level push route; the shell Provider
+    // never made it into this widget's tree).
     context.goWorlds();
+  }
+
+  void _maybeShowRewardOverlay(BuildContext context, ColoringController c) {
+    if (!c.hasUnacknowledgedReward) return;
+    if (_rewardShownThisSession) return;
+    _rewardShownThisSession = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext ctx) => DrawingCompleteOverlay(
+          title: 'WOW!',
+          subtitle: c.lastRewardCoinDelta > 0 || c.lastRewardGemDelta > 0
+              ? 'Your drawing earned stars — and the parent got coins for the gallery.'
+              : 'Your drawing earned stars in ${c.worldId}.',
+          coinDelta: c.lastRewardCoinDelta,
+          gemDelta: c.lastRewardGemDelta,
+          onDone: () {
+            Navigator.of(ctx).pop();
+            c.acknowledgeReward();
+          },
+        ),
+      );
+    });
   }
 
   @override
@@ -165,13 +212,12 @@ class _ColoringScreenBody extends StatelessWidget {
       gradient: AppGradients.skyDefault,
       child: Consumer<ColoringController>(
         builder: (BuildContext context, ColoringController c, Widget? _) {
+          // M2.4 — once the controller flips [hasUnacknowledgedReward]
+          // true, pop the success overlay on the next frame.
+          _maybeShowRewardOverlay(context, c);
           return SafeArea(
-            // bottom: true so the dock never collides with the iOS
-            // home indicator or Android gesture nav bar.
-            bottom: true,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.max,
               children: <Widget>[
                 _topBar(context, c),
                 Expanded(
@@ -262,7 +308,6 @@ class _ColoringScreenBody extends StatelessWidget {
     );
   }
 }
-
 
 // =============================================================================
 //  Notes.

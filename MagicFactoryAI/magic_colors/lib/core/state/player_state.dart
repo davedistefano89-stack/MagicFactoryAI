@@ -29,12 +29,17 @@
 //     [spendCoins]/[grantWorldStars] writer so audit logs match.
 // =============================================================================
 
+// ignore_for_file: unnecessary_brace_in_string_interps
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../data/hive_keys.dart';
 import '../utils/logger.dart';
 
+/// M2.4 — the two ParentGate flavours. [math] always goes through the
+/// 3-tries math challenge. [hold] is the carry-over shortcut for adults
+/// who have already proven themselves once.
+enum ParentGateKind { math, hold }
 
 // ── Hive key constants ───────────────────────────────────────────────────
 // All keys live in `core/data/hive_keys.dart` so writers and readers share
@@ -55,22 +60,49 @@ const String _kLastStreakDateKey = hiveKeyLastStreakDate;
 const String _kRecentColorIdsKey = hiveKeyRecentColorIds;
 const String _kFavoriteColorIdsKey = hiveKeyFavoriteColorIds;
 const String _kUnlockedColorIdsKey = hiveKeyUnlockedColorIds;
-
+// M2.4 — ParentGate persistence.
+const String _kParentGateMathOkKey = hiveKeyParentGateMathOk;
+const String _kParentGateLastFailureAtKey = hiveKeyParentGateLastFailureAt;
 
 // =============================================================================
 //  PlayerState — ChangeNotifier.
 // =============================================================================
 
 final class PlayerState extends ChangeNotifier {
-  PlayerState._(this._box) {
+  PlayerState._bound(this._box) {
+    _hydrate();
+  }
+
+  PlayerState._empty() : _box = null {
     _hydrate();
   }
 
   /// Opens the underlying Hive box and constructs the [PlayerState]. The
   /// caller is responsible for awaiting `Hive.openBox<dynamic>('player')`.
-  factory PlayerState.fromBox(Box<dynamic> box) => PlayerState._(box);
+  /// This is the production path — pop the box before app start.
+  factory PlayerState.fromBox(Box<dynamic> box) => PlayerState._bound(box);
 
-  final Box<dynamic> _box;
+  /// M2.4 PHASE 2 — constructs a [PlayerState] that does NOT touch any
+  /// `Box`. All read helpers fall back to their type defaults (in-memory
+  /// mode), all `_persist` calls become no-ops. Enables widget tests that
+  /// need the full [PlayerState] observable surface without paying the
+  /// cost of bringing up Hive's background isolate.
+  ///
+  /// Production callers MUST use [PlayerState.fromBox] — this factory
+  /// exists ONLY so widget tests on Win32 can bypass the fake-async
+  /// zone hang we hit when Hive.openBox + isolate teardown races
+  /// flutter_test's "did not complete" check.
+  ///
+  /// The `@visibleForTesting` annotation enforces that contract at
+  /// compile time — any production caller that reaches for `.inMemory()`
+  /// gets a static analyzer error rather than a runtime bug.
+  @visibleForTesting
+  factory PlayerState.inMemory() => PlayerState._empty();
+
+  /// Nullable so [PlayerState.inMemory] can construct without a Box.
+  /// Read helpers null-check `_box ??` and return type defaults; the
+  /// [_persist] helper uses `_box?.put(...)` (no-op when null).
+  final Box<dynamic>? _box;
 
   // ── Defaults ──────────────────────────────────────────────────────────
   static const int _defaultCoins = 0;
@@ -82,6 +114,10 @@ final class PlayerState extends ChangeNotifier {
   /// M2.3 recent MRU capacity. Exposed as a static const so the writer
   /// and the UI agree on the visible row count.
   static const int kRecentMruCapacity = 8;
+
+  /// M2.4 — duration during which a failed math-challenge keeps the
+  /// ParentGate locked. After this window the user may reattempt.
+  static const Duration parentGateFailLockout = Duration(hours: 24);
 
   // ── Public read model ──────────────────────────────────────────────────
   int _coins = _defaultCoins;
@@ -119,6 +155,16 @@ final class PlayerState extends ChangeNotifier {
   /// stars). Persisted as a `List<int>`.
   List<int> _unlockedColorIds = <int>[];
 
+  /// M2.4 — ParentGate math-challenge accept flag. True once the user
+  /// has successfully solved the math challenge; flips back to false
+  /// after a failed attempt. Persisted as `bool`.
+  bool _parentGateMathOk = false;
+
+  /// M2.4 — last ParentGate math-challenge failure stamp. When set,
+  /// the gate is locked for [parentGateFailLockout] from this time.
+  /// `null` when there has never been a failure.
+  DateTime? _parentGateLastFailureAt;
+
   int get coins => _coins;
   int get gems => _gems;
 
@@ -142,8 +188,7 @@ final class PlayerState extends ChangeNotifier {
   /// Read-only view of the per-world earned stars. Returns an
   /// unmodifiable map so callers cannot accidentally mutate the live
   /// state-for-grant. Use [getWorldStars] for single-world reads.
-  Map<String, int> get worldStars =>
-      Map<String, int>.unmodifiable(_worldStars);
+  Map<String, int> get worldStars => Map<String, int>.unmodifiable(_worldStars);
 
   /// Returns the earned-stars count for [worldId], defaulting to 0
   /// when the world has never been played.
@@ -155,23 +200,58 @@ final class PlayerState extends ChangeNotifier {
 
   // ── M2.3 — Palette v2 read ─────────────────────────────────────────────
   /// Read-only view of the recent-colours MRU. Most-recent at index 0.
-  List<int> get recentColorIds =>
-      List<int>.unmodifiable(_recentColorIds);
+  List<int> get recentColorIds => List<int>.unmodifiable(_recentColorIds);
 
   /// Read-only view of the favourite colour indexes.
-  List<int> get favoriteColorIds =>
-      List<int>.unmodifiable(_favoriteColorIds);
+  List<int> get favoriteColorIds => List<int>.unmodifiable(_favoriteColorIds);
 
   /// Read-only view of the unlocked tier-1 colour indexes.
-  List<int> get unlockedColorIds =>
-      List<int>.unmodifiable(_unlockedColorIds);
+  List<int> get unlockedColorIds => List<int>.unmodifiable(_unlockedColorIds);
 
+  // ── M2.4 — ParentGate read ──────────────────────────────────────────
+  /// True iff the user has successfully completed a math challenge
+  /// at least once AND has not failed one since.
+  bool get parentGateMathOk => _parentGateMathOk;
+
+  /// Last ParentGate math challenge failure stamp (or null).
+  DateTime? get parentGateLastFailureAt => _parentGateLastFailureAt;
+
+  /// M2.4 — true iff the user is still within the 24h lockout window
+  /// after a failure. While locked, even math-OK users must re-pass
+  /// the math challenge before unlocking premium colours.
+  bool get parentGateFailureLocked {
+    final DateTime? fail = _parentGateLastFailureAt;
+    if (fail == null) return false;
+    return DateTime.now().difference(fail) < PlayerState.parentGateFailLockout;
+  }
+
+  /// M2.4 — true iff the daily chest has already been claimed today.
+  /// Synchronous derivation off [_lastStreakDate] (set every time
+  /// [recordStreak] runs, which is the very first call inside
+  /// [HomeController.onClaimDailyReward]). Avoids a separate Hive key —
+  /// the streak system already records the day-of-claim.
+  bool get dailyRewardClaimed {
+    final DateTime? last = _lastStreakDate;
+    if (last == null) return false;
+    final DateTime now = DateTime.now();
+    return last.year == now.year &&
+        last.month == now.month &&
+        last.day == now.day;
+  }
+
+  /// M2.4 — picks the gate flavour the UI should render.
+  /// • `math` — first ever unlock OR a recent failure within lockout.
+  /// • `hold` — math already accepted AND outside the lockout.
+  ParentGateKind parentGateKind() {
+    if (!_parentGateMathOk) return ParentGateKind.math;
+    if (parentGateFailureLocked) return ParentGateKind.math;
+    return ParentGateKind.hold;
+  }
 
   // ── Convenience predicates ───────────────────────────────────────────
   bool ownsWorld(String worldId) => _ownedWorldIds.contains(worldId);
   bool canAffordCoins(int cost) => _coins >= cost;
   bool canAffordGems(int cost) => _gems >= cost;
-
 
   // ── Currency mutators ─────────────────────────────────────────────────
   /// Adds `amount` coins. Negative values are ignored. Idempotent for
@@ -182,7 +262,7 @@ final class PlayerState extends ChangeNotifier {
     }
     _coins = _coins + amount;
     _persist(_kCoinsKey, _coins);
-    logger.info('PlayerState.grantCoins +$amount (reason=$reason) → ${_coins}');
+    logger.info('PlayerState.grantCoins +$amount (reason=$reason) → $_coins');
     notifyListeners();
   }
 
@@ -200,7 +280,7 @@ final class PlayerState extends ChangeNotifier {
     }
     _coins = _coins - amount;
     _persist(_kCoinsKey, _coins);
-    logger.info('PlayerState.spendCoins -$amount (reason=$reason) → ${_coins}');
+    logger.info('PlayerState.spendCoins -$amount (reason=$reason) → $_coins');
     notifyListeners();
     return true;
   }
@@ -211,7 +291,7 @@ final class PlayerState extends ChangeNotifier {
     }
     _gems = _gems + amount;
     _persist(_kGemsKey, _gems);
-    logger.info('PlayerState.grantGems +$amount (reason=$reason) → ${_gems}');
+    logger.info('PlayerState.grantGems +$amount (reason=$reason) → $_gems');
     notifyListeners();
   }
 
@@ -225,11 +305,10 @@ final class PlayerState extends ChangeNotifier {
     }
     _gems = _gems - amount;
     _persist(_kGemsKey, _gems);
-    logger.info('PlayerState.spendGems -$amount (reason=$reason) → ${_gems}');
+    logger.info('PlayerState.spendGems -$amount (reason=$reason) → $_gems');
     notifyListeners();
     return true;
   }
-
 
   // ── Entitlement mutators ─────────────────────────────────────────────
   /// Records a successful Premium purchase (or restore). When [expiresAt]
@@ -262,7 +341,6 @@ final class PlayerState extends ChangeNotifier {
     _persist(_kAvatarKey, avatarId);
     notifyListeners();
   }
-
 
   // ── Streak mutators ──────────────────────────────────────────────────
   /// Increments the daily streak iff the user opened the app today AND
@@ -335,12 +413,12 @@ final class PlayerState extends ChangeNotifier {
     return _streakDays;
   }
 
-
   /// Awards [delta] stars to [worldId] (clamped to 3 per world so the
   /// quality metric never inflates past the game-design ceiling). Idempotent
   /// against non-positive deltas. Persisted as `Map<String, int>` so adding
   /// new worlds to the catalog needs no schema migration.
-  void grantWorldStars(String worldId, int delta, {String reason = 'unspecified'}) {
+  void grantWorldStars(String worldId, int delta,
+      {String reason = 'unspecified'}) {
     if (delta == 0) {
       return;
     }
@@ -361,12 +439,12 @@ final class PlayerState extends ChangeNotifier {
     notifyListeners();
   }
 
-
   /// Permanently marks [achievementId] as unlocked. Returns true iff the
   /// achievement was NEWLY added (idempotent across multiple save ticks).
   /// Caller is responsible for granting the matching reward before / after
   /// this call — this method only persists the "seen it" flag.
-  bool unlockAchievement(String achievementId, {String reason = 'unspecified'}) {
+  bool unlockAchievement(String achievementId,
+      {String reason = 'unspecified'}) {
     if (achievementId.isEmpty) {
       return false;
     }
@@ -384,7 +462,6 @@ final class PlayerState extends ChangeNotifier {
     notifyListeners();
     return true;
   }
-
 
   // ── M2.3 — Palette v2 mutators ────────────────────────────────────────
 
@@ -417,9 +494,8 @@ final class PlayerState extends ChangeNotifier {
     }
     final bool nowFavorited;
     if (_favoriteColorIds.contains(paletteIndex)) {
-      _favoriteColorIds = _favoriteColorIds
-          .where((int i) => i != paletteIndex)
-          .toList();
+      _favoriteColorIds =
+          _favoriteColorIds.where((int i) => i != paletteIndex).toList();
       nowFavorited = false;
     } else {
       _favoriteColorIds = <int>[..._favoriteColorIds, paletteIndex];
@@ -455,7 +531,7 @@ final class PlayerState extends ChangeNotifier {
     _persist(_kUnlockedColorIdsKey, _unlockedColorIds);
     logger.info(
       'PlayerState.unlockColorWithCoins -$cost → '
-      'unlockedColorIds=${_unlockedColorIds.length}',
+      'unlockedColorIds=$_unlockedColorIds.length',
     );
     notifyListeners();
     return true;
@@ -487,12 +563,11 @@ final class PlayerState extends ChangeNotifier {
     _persist(_kUnlockedColorIdsKey, _unlockedColorIds);
     logger.info(
       'PlayerState.unlockColorWithStars -$cost world=$worldId → '
-      'unlockedColorIds=${_unlockedColorIds.length}',
+      'unlockedColorIds=$_unlockedColorIds.length',
     );
     notifyListeners();
     return true;
   }
-
 
   // ── Internals ─────────────────────────────────────────────────────────
   void _hydrate() {
@@ -511,14 +586,59 @@ final class PlayerState extends ChangeNotifier {
     _recentColorIds = _readIntListOrEmpty(_kRecentColorIdsKey);
     _favoriteColorIds = _readIntListOrEmpty(_kFavoriteColorIdsKey);
     _unlockedColorIds = _readIntListOrEmpty(_kUnlockedColorIdsKey);
+
+    // M2.4 hydrate — ParentGate. Both entries are fault-tolerant.
+    _parentGateMathOk = _readOrDefault<bool>(_kParentGateMathOkKey, false);
+    _parentGateLastFailureAt =
+        _readOrNull<DateTime>(_kParentGateLastFailureAtKey);
+  }
+
+  // ── M2.4 — ParentGate mutators ───────────────────────────────────────
+
+  /// M2.4 — record a successful math-challenge answer. Flips the
+  /// math-OK flag true and clears any pending failure stamp so the
+  /// hold-to-confirm shortcut becomes available immediately.
+  void recordParentGateMathSuccess() {
+    if (_parentGateMathOk && _parentGateLastFailureAt == null) {
+      return;
+    }
+    _parentGateMathOk = true;
+    _parentGateLastFailureAt = null;
+    _persist(_kParentGateMathOkKey, _parentGateMathOk);
+    _persist(_kParentGateLastFailureAtKey, _parentGateLastFailureAt);
+    logger.info('PlayerState.recordParentGateMathSuccess → math-ok');
+    notifyListeners();
+  }
+
+  /// M2.4 — record a failed math-challenge attempt (caller fires this
+  /// after the user has burned the 3 tries). Sets the failure stamp
+  /// to now; the math-OK flag stays false so subsequent unlocks still
+  /// trigger the challenge.
+  void recordParentGateMathFailure() {
+    _parentGateMathOk = false;
+    _parentGateLastFailureAt = DateTime.now();
+    _persist(_kParentGateMathOkKey, _parentGateMathOk);
+    _persist(_kParentGateLastFailureAtKey, _parentGateLastFailureAt);
+    logger.info('PlayerState.recordParentGateMathFailure → locked 24h');
+    notifyListeners();
+  }
+
+  /// M2.4 — record a successful hold-to-confirm. Currently a no-op
+  /// reservation point so future telemetry (analytics) can hang here.
+  void recordParentGateHoldSuccess() {
+    logger.info('PlayerState.recordParentGateHoldSuccess → accepted');
   }
 
   /// Same contract as AppState._readOrDefault — returns [defaultValue] if
   /// the entry is missing or the cast fails (logged), so the provider
-  /// never crashes a cold start on a schema-drift.
+  /// never crashes a cold start on a schema-drift. When constructed via
+  /// [PlayerState.inMemory] (no box) skips the read and returns the
+  /// default directly.
   T _readOrDefault<T>(String key, T defaultValue) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return defaultValue;
     try {
-      return _box.get(key, defaultValue: defaultValue) as T;
+      return box.get(key, defaultValue: defaultValue) as T;
     } on Object catch (error, stack) {
       logger.error(
         'PlayerState._readOrDefault<$T> cast failed key=$key',
@@ -529,10 +649,13 @@ final class PlayerState extends ChangeNotifier {
     }
   }
 
-  /// Nullable read with cast-failure → null + logger.error.
+  /// Nullable read with cast-failure → null + logger.error. Returns null
+  /// for [PlayerState.inMemory] (no box).
   T? _readOrNull<T>(String key) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return null;
     try {
-      return _box.get(key) as T?;
+      return box.get(key) as T?;
     } on Object catch (error, stack) {
       logger.error(
         'PlayerState._readOrNull<$T> cast failed key=$key',
@@ -547,10 +670,13 @@ final class PlayerState extends ChangeNotifier {
   /// native Set adapter so we store it as `List<String>` — on read we
   /// rebuild the Set. Any TypeError (corrupted list, non-String entry,
   /// schema-drift) falls back to the starter set so the player always
-  /// owns at least one world on first launch.
+  /// owns at least one world on first launch. Returns the starter set
+  /// for [PlayerState.inMemory].
   Set<String> _readOwnedWorlds() {
+    final Box<dynamic>? box = _box;
+    if (box == null) return <String>{..._starterWorlds};
     try {
-      final raw = _box.get(_kOwnedWorldsKey);
+      final raw = box.get(_kOwnedWorldsKey);
       if (raw == null) {
         return <String>{..._starterWorlds};
       }
@@ -565,13 +691,15 @@ final class PlayerState extends ChangeNotifier {
     }
   }
 
-  /// Reads a Hive entry as `Map<String, int>` (or any typed Map<k,v>).
+  /// Reads a Hive entry as `Map<String, int>` (or any typed `Map<k,v>`).
   /// Falls back to an empty map on schema-drift / cast failure so a
-  /// corrupted box cannot crash cold-start. Hive 2 supports maps
-  /// natively — no custom adapter required.
+  /// corrupted box cannot crash cold-start. Returns an empty map for
+  /// [PlayerState.inMemory].
   Map<K, V> _readMapOrEmpty<K, V>(String key) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return <K, V>{};
     try {
-      final raw = _box.get(key);
+      final raw = box.get(key);
       if (raw == null) {
         return <K, V>{};
       }
@@ -589,10 +717,13 @@ final class PlayerState extends ChangeNotifier {
   /// Reads a Hive entry as `List<String>` and rebuilds an unmodifiable
   /// `Set<String>`. Used for the unlocked-achievement-id list. On
   /// cast failure, swallows + logs and returns an empty set so the
-  /// achievements flow can re-evaluate from a clean slate.
+  /// achievements flow can re-evaluate from a clean slate. Returns an
+  /// empty set for [PlayerState.inMemory].
   Set<String> _readIdSet(String key) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return const <String>{};
     try {
-      final raw = _box.get(key);
+      final raw = box.get(key);
       if (raw == null) {
         return const <String>{};
       }
@@ -609,10 +740,12 @@ final class PlayerState extends ChangeNotifier {
 
   /// M2.3 — reads a Hive entry as `List<int>`. Cast failure falls back
   /// to an empty list so a corrupted box (eg a user-imported save)
-  /// cannot crash cold-start.
+  /// cannot crash cold-start. Returns empty for [PlayerState.inMemory].
   List<int> _readIntListOrEmpty(String key) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return <int>[];
     try {
-      final raw = _box.get(key);
+      final raw = box.get(key);
       if (raw == null) {
         return <int>[];
       }
@@ -627,9 +760,15 @@ final class PlayerState extends ChangeNotifier {
     }
   }
 
+  /// No-op when [_box] is null ([PlayerState.inMemory]). In production
+  /// hits the box; on any throw we log + swallow so a failing persistence
+  /// layer never crashes the observable surfaced (callers already see
+  /// the in-memory values mutated).
   void _persist(String key, Object? value) {
+    final Box<dynamic>? box = _box;
+    if (box == null) return;
     try {
-      _box.put(key, value);
+      box.put(key, value);
     } on Object catch (error, stack) {
       logger.error(
         'PlayerState._persist failed key=$key',

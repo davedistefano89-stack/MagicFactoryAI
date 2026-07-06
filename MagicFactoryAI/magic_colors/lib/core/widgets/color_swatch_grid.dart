@@ -35,21 +35,20 @@
 import 'package:flutter/material.dart';
 
 import '../design/design_tokens.dart';
+// M2.4 — shared ripple colour with palette tabs + brush chips;
+// uses `AppColors.magicPurple`.
 import '../theme/app_colors.dart';
 import '../theme/app_shape.dart';
 import '../utils/haptics.dart';
-
 
 /// Tile overlay state. Set when a swatch sits in a tier-1 (locked)
 /// or tier-2 (premium) bucket. Favorited is purely decorative.
 enum ColorSwatchOverlay { none, locked, premium, favorited }
 
-
 /// Maximum ticks a single swatch button stays in its scaled-up state
 /// after the user releases their tap. Drives the [AnimatedContainer]
 /// transition.
 const Duration _kSwatchTapInDuration = AppDuration.fast;
-
 
 class ColorSwatchGrid extends StatelessWidget {
   const ColorSwatchGrid({
@@ -63,6 +62,10 @@ class ColorSwatchGrid extends StatelessWidget {
     this.onLockedTap,
     this.onPremiumTap,
     this.favoritedIndexes = const <int>{},
+    // M2.4 — long-press hook to toggle favorite (was implicit; now
+    // passed explicitly so the grid can have an explicit favorite
+    // gesture without re-routing through onSelect).
+    this.onLongPress,
   });
 
   /// Palette. `Color(0x00000000)` is the "eraser" position (rendered with
@@ -99,6 +102,11 @@ class ColorSwatchGrid extends StatelessWidget {
   /// M2.3 — set of palette indexes that are user-favorited. Drives a
   /// small filled star in the corner of the swatch.
   final Set<int> favoritedIndexes;
+
+  /// M2.4 — long-press callback (one-shot, no ripple). Routes through
+  /// the parent's favorite toggle so the swatch tile doesn't carry
+  /// duplicate state.
+  final ValueChanged<int>? onLongPress;
 
   int _rowsFor(int count) {
     if (count <= 0) return 0;
@@ -143,6 +151,7 @@ class ColorSwatchGrid extends StatelessWidget {
       size: swatchSize,
       overlay: overlay,
       favorited: favorited,
+      onLongPress: (() => onLongPress?.call(index)),
       onTap: () {
         Haptics.selection();
         switch (overlay) {
@@ -170,7 +179,6 @@ class ColorSwatchGrid extends StatelessWidget {
   int _costStarsFor(int _) => 0;
 }
 
-
 // =============================================================================
 //  _SwatchTile — single filled-circle button (M2.3 with overlays).
 // =============================================================================
@@ -183,6 +191,7 @@ class _SwatchTile extends StatelessWidget {
     required this.overlay,
     required this.favorited,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final Color color;
@@ -191,6 +200,7 @@ class _SwatchTile extends StatelessWidget {
   final ColorSwatchOverlay overlay;
   final bool favorited;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -198,28 +208,38 @@ class _SwatchTile extends StatelessWidget {
       button: true,
       selected: selected,
       label: _semanticLabel(),
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: _kSwatchTapInDuration,
-          curve: AppCurves.buttonBounce,
-          width: size,
-          height: size,
-          transform: Matrix4.identity()..scale(selected ? 1.06 : 1.0),
-          transformAlignment: Alignment.center,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: color.alpha == 0 ? AppColors.skyTouchedWhite : color,
-            border: Border.all(
-              color: selected
-                  ? AppColors.magicPink
-                  : AppColors.smoke.withValues(alpha: 0.30),
-              width: selected ? 4.0 : 2.0,
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        // M2.4 — InkWell on top of the AnimatedContainer so the
+        // magenta ripple plays alongside the existing scale-fade.
+        child: InkWell(
+          splashColor: AppColors.magicPurple.withValues(alpha: 0.22),
+          highlightColor: AppColors.magicPurple.withValues(alpha: 0.10),
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: AnimatedContainer(
+            duration: _kSwatchTapInDuration,
+            curve: AppCurves.buttonBounce,
+            width: size,
+            height: size,
+            transform: Matrix4.identity()..scale(selected ? 1.06 : 1.0),
+            transformAlignment: Alignment.center,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.a == 0.0 ? AppColors.skyTouchedWhite : color,
+              border: Border.all(
+                color: selected
+                    ? AppColors.magicPink
+                    : AppColors.smoke.withValues(alpha: 0.30),
+                width: selected ? 4.0 : 2.0,
+              ),
+              boxShadow: selected ? AppElevation.softChip : const <BoxShadow>[],
             ),
-            boxShadow: selected ? AppElevation.softChip : const <BoxShadow>[],
+            child: _swatchGlyph(context),
           ),
-          child: _swatchGlyph(context),
         ),
       ),
     );
@@ -238,7 +258,7 @@ class _SwatchTile extends StatelessWidget {
   }
 
   Widget? _swatchGlyph(BuildContext context) {
-    if (color.alpha == 0) {
+    if (color.a == 0.0) {
       return Icon(
         Icons.cleaning_services_rounded,
         size: size * 0.45,

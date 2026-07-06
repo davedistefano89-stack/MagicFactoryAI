@@ -11,31 +11,28 @@
 //   • ColorTier.free    — every drawing surfaces these without limits.
 //                         Currently maps to PaletteCatalog.colors[0..23].
 //   • ColorTier.locked  — ships locked; unlocks via coins OR stars.
-///                         `unlockCostCoins` + `unlockCostStars` are
-///                         defined in [PaletteCatalog.colorMetaAt] so the
-///                         UI can render the "spend 100 coins or 3 stars"
-///                         affordance from one source of truth.
-///   • ColorTier.premium — requires player.isPremium. Listed in [
-///                         PaletteCatalog.premiumIndexes].
-///
-/// HYBRID PRICING RULES
-///   The user picked "Coins OR stars" — any of the two unlocks the
-///   colour. The UI's "Unlock" affordance mutates PlayerState via
-///   [PlayerState.spendCoinsForColor] OR [PlayerState.spendWorldStarsForColor].
-///   Either mutator adds the colour's index to
-///   `unlockedColorIds` and persists.
+//                         `unlockCostCoins` + `unlockCostStars` are
+//                         defined in [PaletteCatalog.colorMetaAt] so the
+//                         UI can render the "spend 100 coins or 3 stars"
+//                         affordance from one source of truth.
+//   • ColorTier.premium — requires player.isPremium. Listed in [
+//                         PaletteCatalog.premiumIndexes].
+//
+// HYBRID PRICING RULES
+//   The user picked "Coins OR stars" — any of the two unlocks the
+//   colour. The UI's "Unlock" affordance mutates PlayerState via
+//   [PlayerState.spendCoinsForColor] OR [PlayerState.spendWorldStarsForColor].
+//   Either mutator adds the colour's index to
+//   `unlockedColorIds` and persists.
 // =============================================================================
-
 
 import 'package:flutter/painting.dart' show Color;
 
 import '../data/palette_catalog.dart';
 
-
 /// Tier classification for a palette colour. Drives the UI overlay
 /// (lock, premium crown) and decides which affordance fires on tap.
 enum ColorTier { free, locked, premium }
-
 
 /// One ACL read-result. Combines a tier classification with the costs
 /// the player must pay to lift the lock (locked tier only).
@@ -69,7 +66,6 @@ final class ColorAclEntry {
   bool get isFree => tier == ColorTier.free;
 }
 
-
 abstract final class ColorAcl {
   const ColorAcl._();
 
@@ -78,8 +74,7 @@ abstract final class ColorAcl {
     required int paletteIndex,
     required Iterable<int> unlockedIndexes,
   }) {
-    if (paletteIndex < 0 ||
-        paletteIndex >= PaletteCatalog.colors.length) {
+    if (paletteIndex < 0 || paletteIndex >= PaletteCatalog.colors.length) {
       return false;
     }
     if (!PaletteCatalog.isLockedIndex(paletteIndex)) {
@@ -95,8 +90,7 @@ abstract final class ColorAcl {
     required int paletteIndex,
     required Iterable<int> unlockedIndexes,
   }) {
-    if (paletteIndex < 0 ||
-        paletteIndex >= PaletteCatalog.colors.length) {
+    if (paletteIndex < 0 || paletteIndex >= PaletteCatalog.colors.length) {
       return false;
     }
     if (PaletteCatalog.isPremiumIndex(paletteIndex)) {
@@ -151,10 +145,8 @@ abstract final class ColorAcl {
         index: paletteIndex,
         color: color,
         tier: ColorTier.locked,
-        unlockCostCoins:
-            PaletteCatalog.unlockCostCoinsFor(paletteIndex),
-        unlockCostStars:
-            PaletteCatalog.unlockCostStarsFor(paletteIndex),
+        unlockCostCoins: PaletteCatalog.unlockCostCoinsFor(paletteIndex),
+        unlockCostStars: PaletteCatalog.unlockCostStarsFor(paletteIndex),
       );
     }
     return ColorAclEntry(

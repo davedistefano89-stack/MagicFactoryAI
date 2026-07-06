@@ -20,16 +20,13 @@
 
 import 'dart:ui';
 
-import 'package:flutter/widgets.dart' show Matrix4;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:magic_colors/features/coloring/state/view_transform_controller.dart';
 
-
 // Tight, named-clamp bound re-exported from the config so tests below
 // can read it without recomputing the math.
 const double _kSlack = ViewTransformConfig.panSlack;
-
 
 void main() {
   group('ViewTransformController — defaults', () {
@@ -54,17 +51,20 @@ void main() {
   group('ViewTransformController — scaleAroundFocalPoint', () {
     test('clamps to minScale (0.5x)', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
-      c.scaleAroundFocalPoint(factor: 0.01, focalPointScreen: const Offset(400, 300));
+      c.scaleAroundFocalPoint(
+          factor: 0.01, focalPointScreen: const Offset(400, 300));
       expect(c.scale, ViewTransformConfig.minScale);
     });
 
     test('clamps to maxScale (4.0x)', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
-      c.scaleAroundFocalPoint(factor: 99.0, focalPointScreen: const Offset(400, 300));
+      c.scaleAroundFocalPoint(
+          factor: 99.0, focalPointScreen: const Offset(400, 300));
       expect(c.scale, ViewTransformConfig.maxScale);
     });
 
-    test('keeps the world point under the focal pinned across the scale change', () {
+    test('keeps the world point under the focal pinned across the scale change',
+        () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
       // At identity, world point (300, 200) is at screen (300, 200).
       const Offset focal = Offset(300, 200);
@@ -78,7 +78,8 @@ void main() {
 
     test('serialises into a finite matrix after a pinch step', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
-      c.scaleAroundFocalPoint(factor: 2.5, focalPointScreen: const Offset(400, 300));
+      c.scaleAroundFocalPoint(
+          factor: 2.5, focalPointScreen: const Offset(400, 300));
       final m = c.matrix;
       // All 16 entries finite.
       for (int cIdx = 0; cIdx < 4; cIdx++) {
@@ -103,8 +104,8 @@ void main() {
     test('pan way past bounds clamps to the slack window', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
       c.pan(const Offset(1000000, 1000000));
-      final double scaledW = 800 * 1.0;
-      final double scaledH = 600 * 1.0;
+      const double scaledW = 800 * 1.0;
+      const double scaledH = 600 * 1.0;
       expect(c.translation.dx, closeTo(scaledW * (1.0 - _kSlack), 1e-6));
       expect(c.translation.dy, closeTo(scaledH * (1.0 - _kSlack), 1e-6));
     });
@@ -112,8 +113,8 @@ void main() {
     test('negative pan clamps to the negative slack window', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
       c.pan(const Offset(-1000000, -1000000));
-      final double scaledW = 800 * 1.0;
-      final double scaledH = 600 * 1.0;
+      const double scaledW = 800 * 1.0;
+      const double scaledH = 600 * 1.0;
       expect(c.translation.dx, closeTo(-scaledW * _kSlack, 1e-6));
       expect(c.translation.dy, closeTo(-scaledH * _kSlack, 1e-6));
     });
@@ -151,7 +152,8 @@ void main() {
   group('ViewTransformController — resetView', () {
     test('restores identity', () {
       final c = ViewTransformController(canvasSize: const Size(800, 600));
-      c.scaleAroundFocalPoint(factor: 2.0, focalPointScreen: const Offset(400, 300));
+      c.scaleAroundFocalPoint(
+          factor: 2.0, focalPointScreen: const Offset(400, 300));
       c.pan(const Offset(10, 10));
       c.resetView();
       expect(c.scale, 1.0);

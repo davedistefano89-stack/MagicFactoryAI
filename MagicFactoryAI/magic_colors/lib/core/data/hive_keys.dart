@@ -11,29 +11,24 @@
 // kebab-case stable identifiers — they ship in player save files.
 // =============================================================================
 
-
 /// Key for the per-world earned-stars Map. Producer: PlayerState.
 ///   `Map<String, int>` where keys are `WorldData.id` (kebab/snake).
 const String hiveKeyWorldStars = 'player.worldStars';
-
 
 /// Key for the unlocked achievement-id set. Producer: PlayerState;
 /// referenced by AchievementService via the `hiveKey` accessor below.
 ///   `List<String>` (Hive 2 has no Set adapter) of stable ids.
 const String hiveKeyUnlockedAchievementIds = 'player.unlockedAchievementIds';
 
-
 /// Key for the daily-streak integer counter. Producer + reader: PlayerState.
 ///   `int` (>= 0). Resets to 1 on first-ever launch and after any gap > 1 day.
 const String hiveKeyStreakDays = 'player.streakDays';
-
 
 /// Key for the last-streak DateTime stamp. Producer + reader: PlayerState.
 ///   `DateTime?` — serialized with `_box.put`. Stripped to a calendar-date
 ///   (year/month/day) on write so DST and timezone shifts cannot poison
 ///   the streak comparison.
 const String hiveKeyLastStreakDate = 'player.lastStreakDate';
-
 
 // ── M2.3 Palette v2 keys ───────────────────────────────────────────────
 
@@ -42,12 +37,10 @@ const String hiveKeyLastStreakDate = 'player.lastStreakDate';
 ///   `List<int>` of ARGB packed ints (Color.value).
 const String hiveKeyRecentColorIds = 'player.recentColorIds';
 
-
 /// Key for the player-favourited colour ids. Producer: PlayerState.
 ///   `List<String>` of palette-stable ids (kebab/snake). Hive 2 has no
 ///   Set adapter; the writer/reader treat it as a Set semantically.
 const String hiveKeyFavoriteColorIds = 'player.favoriteColorIds';
-
 
 /// Key for the unlocked colour ids. Producer: PlayerState — set when
 /// the player spends coins (or stars via `spendWorldStarCurrency`) to
@@ -56,10 +49,22 @@ const String hiveKeyFavoriteColorIds = 'player.favoriteColorIds';
 ///   hiveKeyFavoriteColorIds].
 const String hiveKeyUnlockedColorIds = 'player.unlockedColorIds';
 
-
 /// Capacity of the recent-colours MRU list. The canonical value lives
 /// on `PlayerState.kRecentMruCapacity` so the writer/reader surface
 /// stays next to the mutators that read it. This file keeps the
 /// pointer comment for grep-findability.
 /// (No constant declared here — kept as a comment to avoid an
 /// otherwise unused-element lint.)
+
+// ── M2.4 ParentGate keys ───────────────────────────────────────────────
+
+/// Key for the ParentGate math-challenge accept flag. Producer +
+/// reader: PlayerState. `bool`. Default false — first Premium tap
+/// triggers the math challenge; success flips this to true and
+/// subsequent unlocks use the hold-to-confirm shortcut.
+const String hiveKeyParentGateMathOk = 'player.parentGateMathOk';
+
+/// Key for the last ParentGate math-challenge failure timestamp.
+/// Producer + reader: PlayerState. `DateTime?`. Set on failure; the
+/// gate remains locked until 24 h after this stamp.
+const String hiveKeyParentGateLastFailureAt = 'player.parentGateLastFailureAt';

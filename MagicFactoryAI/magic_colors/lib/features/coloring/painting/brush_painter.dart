@@ -2,52 +2,44 @@
 // Magic Colors · features/coloring/painting/brush_painter.dart
 // =============================================================================
 //
-// M2.2 — Single source of truth for "given a Canvas + a PaintCommand
-// OR a DrawingStroke, paint one brush stroke OR one fill region".
+// M2.2 PRODUCTION - Single source of truth for "given a Canvas + a
+// PaintCommand OR a DrawingStroke, paint one brush stroke OR one fill
+// region".
 //
 // M2.3 EXTENSION
-//   • Pencil brush dispatch (_pencil) — thin dark line with a faint
-//     noise overlay. Stroke geometry stays the same as Round; the
-//     difference is the per-point jitter + low alpha pass.
-//   • FillRegion gained an optional GradientPair. When provided AND
-//     isTwoStop → the painter instantiates a `ui.Gradient.linear`
-//     shaded across the FillRegion bounds (top → bottom). Otherwise
-//     the M2.2 single-colour path runs unchanged.
+//   - Pencil brush dispatch (_pencil) - thin dark line with a faint
+//     noise overlay.
+//   - FillRegion supports an optional GradientPair.
+//
+// M2.2 PRODUCTION NOTES
+//   - The PRIMARY fill paint path lives in
+//     widgets/coloring_canvas.dart / _paintFillRegionCached, which
+//     replays cached `ui.Picture`s at O(1) per frame.
+//   - `paintFillRegion` here is the FALLBACK path, used by tests and
+//     any code path that doesn't have access to a pre-baked Picture.
+//     It stamps one canvas.drawRect per FillSpan (in IMAGE coords,
+//     after the standard translate+scale+dtranslate to land the
+//     region correctly on the painter's logical canvas).
 //
 // Used by:
-//   • The custom painter in `widgets/coloring_canvas.dart` (renders
-//     every PaintCommand in the redo stack once per frame, plus the
-//     in-progress active stroke live).
-//   • `StrokePictureCache` for committed commands (records the brush
+//   - widgets/coloring_canvas.dart (every PaintCommand in the redo stack
+//     once per frame, plus the in-progress active stroke live).
+//   - StrokePictureCache for committed commands (records the brush
 //     ops into a ui.Picture for fast re-raster at any zoom).
 //
-// PAINTING CONTRACT
-//   • Caller sets up the canvas (translation, clip, bounds).
-//   • Caller chooses `reduceMotion` from SettingsState.
-//   • For DrawStroke commands the active dispatch returns the same
-//     result for matching brushes as M2.2.
-//   • For FillRegion commands rows of opaque (A==255) mask pixels
-//     become a filled RowRect at the region's origin. M2.4 polish
-//     can swap to a single decoded-image blit.
-// =============================================================================
+// ============================================================================
 
 import 'dart:math' as math;
-import 'dart:typed_data' show Uint8List;
 import 'dart:ui' show Canvas, Gradient, Offset, Path, Rect;
 
-import 'package:flutter/painting.dart' show
-    BlendMode,
-    Color,
-    Paint,
-    PaintingStyle,
-    StrokeCap,
-    StrokeJoin;
+import 'package:flutter/painting.dart'
+    show BlendMode, Color, Paint, PaintingStyle, StrokeCap, StrokeJoin;
 
 import '../domain/drawing_stroke.dart';
 import '../domain/enums.dart';
 import '../domain/gradient_pair.dart';
 import '../domain/paint_command.dart';
-
+import '../fill/scanline_filler.dart' show FillSpan;
 
 /// Tuning constants for brush rendering. Public so tests can reference
 /// them; centralised here so the picture baker and the live painter
@@ -64,31 +56,29 @@ abstract final class BrushPaintConstants {
   /// Marker base alpha (0..1).
   static const double markerBaseAlpha = 0.65;
 
-  /// Eraser hard-erase alpha (always 1 — BlendMode.clear paints 0).
+  /// Eraser hard-erase alpha (always 1 - BlendMode.clear paints 0).
   static const double eraserHardAlpha = 1.0;
 
-  /// Crayon width is the user-set size × 0.85 so it reads as a soft
+  /// Crayon width is the user-set size x 0.85 so it reads as a soft
   /// drag rather than a bold line.
   static const double crayonWidthFactor = 0.85;
 
-  /// M2.2 — preview alpha for the on-pointer-down region highlight
-  /// (a quick tint of the selected colour over the connected region).
+  /// M2.2 PRODUCTION - preview alpha for the on-pointer-down region
+  /// highlight (a quick tint of the selected colour over the
+  /// connected region).
   static const double fillPreviewAlpha = 0.30;
 
-  /// M2.2 — fully-committed fill region alpha at the end of its
-  /// fade-in animation.
+  /// M2.2 PRODUCTION - fully-committed fill region alpha at the end
+  /// of its fade-in animation.
   static const double fillCommittedAlpha = 1.0;
 
-  /// M2.3 — pencil jitter magnitude (px). Tight so the line still
-  /// reads as a coherent path under a child's uneven finger cadence.
+  /// M2.3 - pencil jitter magnitude (px).
   static const double pencilJitterMagnitude = 0.65;
 
-  /// M2.3 — second-pass faint seed alpha (multiplied onto a copy of
-  /// the stroke). Reads as "graphite on paper" without expensive
-  /// per-pixel shaders.
+  /// M2.3 - second-pass faint seed alpha (multiplied onto a copy of
+  /// the stroke).
   static const double pencilSeedAlpha = 0.3;
 }
-
 
 /// Brush-paint utility. Used as both the live painter and the
 /// picture-baker's reference implementation.
@@ -117,32 +107,36 @@ class BrushPainter {
       case BrushType.eraser:
         _eraser(canvas, stroke);
       case BrushType.fill:
-        // M2.2 — fill is a TAP tool dispatched via
-        // [paintFillRegion] below. Refusing to paint it via the
-        // stroke dispatcher keeps the type-system honest: the
-        // canvas state machine routes taps (not drags) through
-        // paintFillRegion directly.
+        // M2.2 PRODUCTION - fill is a TAP tool dispatched via
+        // [paintFillRegion] below. The painter routes FillRegion
+        // through FillPictureCache; this method refuses to handle
+        // fill via the stroke dispatcher so the type-system stays
+        // honest.
         break;
       case BrushType.pencil:
-        // M2.3 — thin dark line with jitter + faint seed pass.
         _pencil(canvas, stroke);
     }
   }
 
-  /// M2.2 — paints a [FillRegion] onto the canvas by tracing the
-  /// mask row-by-row and stamping horizontal rects for each visited
-  /// run. [alphaMultiplier] lets the caller fade-in: pass `progress`
-  /// from the FillAnimator (0..1). M2.3 — accept an optional
-  /// [gradient]; when the gradient is `isTwoStop == true` every
-  /// stamped rect is filled with a `ui.Gradient.linear` shader
-  /// mapped to the region bounds (top → bottom).
+  /// M2.2 PRODUCTION - paints a FillRegion onto the canvas using the
+  /// spans-aware FALLBACK path (no pre-baked Picture available).
+  ///
+  /// Coordinate transform (matches the cache's pre-bake convention):
+  ///   1. translate(region.origin.dx, region.origin.dy)         // logical
+  ///   2. scale(region.pixelRatio, region.pixelRatio)           // -> image
+  ///   3. translate(-imageBounds.left, -imageBounds.top)        // -> spans
+  /// Spans are then drawn in image coords (xStart, row == 1 px tall).
+  ///
+  /// M2.3 - accept an optional [gradient]; when isTwoStop, every
+  /// stamped rect is filled with a ui.Gradient.linear shader mapped
+  /// to the region bounds (now in IMAGE coords at this point).
   void paintFillRegion(
     Canvas canvas,
     FillRegion region, {
     required double alphaMultiplier,
     GradientPair? gradient,
   }) {
-    if (region.mask.isEmpty || region.width <= 0 || region.height <= 0) {
+    if (region.spans.isEmpty || region.width <= 0 || region.height <= 0) {
       return;
     }
     final double alpha = alphaMultiplier.clamp(0.0, 1.0) *
@@ -155,18 +149,20 @@ class BrushPainter {
     );
     canvas.save();
     canvas.translate(region.origin.dx, region.origin.dy);
+    canvas.scale(region.pixelRatio, region.pixelRatio);
+    canvas.translate(-region.imageBounds.left, -region.imageBounds.top);
     if (useGradient) {
-      _drawMaskRunsShader(canvas, region, paint, gradient);
+      _drawSpansShader(canvas, region, paint);
     } else {
-      _drawMaskRuns(canvas, region, paint);
+      _drawSpans(canvas, region, paint);
     }
     canvas.restore();
   }
 
-  /// Dispatches a [PaintCommand] to the matching brush. The active
+  /// Dispatches a PaintCommand to the matching brush. The active
   /// stroke path uses [paint]; the FillRegion path uses
   /// [paintFillRegion]. The [alphaMultiplier] only applies to the
-  /// latter — strokes paint at full opacity.
+  /// latter - strokes paint at full opacity.
   void paintCommand(
     Canvas canvas,
     PaintCommand command, {
@@ -187,8 +183,7 @@ class BrushPainter {
     }
   }
 
-
-  // ── Helpers: row-by-row mask stamping ──────────────────────────────
+  // ── Spans-aware fill helpers (FALLBACK) ───────────────────────────
 
   Paint _paintForFill({
     required FillRegion region,
@@ -199,11 +194,13 @@ class BrushPainter {
       ..style = PaintingStyle.fill
       ..isAntiAlias = false;
     if (gradient != null) {
+      // Bounding rect is in IMAGE coords at this point (canvas was
+      // translated+scale+dtranslate before this method is called).
       final Rect bounds = Rect.fromLTWH(
-        region.origin.dx,
-        region.origin.dy,
-        region.width.toDouble(),
-        region.height.toDouble(),
+        0,
+        0,
+        region.imageBounds.width,
+        region.imageBounds.height,
       );
       paint.shader = Gradient.linear(
         Offset(bounds.left, bounds.top),
@@ -215,115 +212,36 @@ class BrushPainter {
         <double>[0.0, 1.0],
       );
     } else {
-      paint.color =
-          Color(region.colorValue).withValues(alpha: alpha);
+      paint.color = Color(region.colorValue).withValues(alpha: alpha);
     }
     return paint;
   }
 
-  void _drawMaskRuns(Canvas canvas, FillRegion region, Paint paint) {
-    final Uint8List visited = _visitedFromMask(region);
-    for (int y = 0; y < region.height; y++) {
-      int runStart = -1;
-      for (int x = 0; x < region.width; x++) {
-        final int idx = y * region.width + x;
-        final int visitedByte = visited[idx];
-        if (visitedByte != 0) {
-          if (runStart < 0) runStart = x;
-        } else if (runStart >= 0) {
-          canvas.drawRect(
-            Rect.fromLTWH(
-              runStart.toDouble(),
-              y.toDouble(),
-              (x - runStart).toDouble(),
-              1.0,
-            ),
-            paint,
-          );
-          runStart = -1;
-        }
-      }
-      if (runStart >= 0) {
-        canvas.drawRect(
-          Rect.fromLTWH(
-            runStart.toDouble(),
-            y.toDouble(),
-            (region.width - runStart).toDouble(),
-            1.0,
-          ),
-          paint,
-        );
-      }
+  void _drawSpans(Canvas canvas, FillRegion region, Paint paint) {
+    for (final FillSpan span in region.spans) {
+      canvas.drawRect(
+        Rect.fromLTRB(
+          span.xStart.toDouble(),
+          span.row.toDouble(),
+          (span.xEndInclusive + 1).toDouble(),
+          (span.row + 1).toDouble(),
+        ),
+        paint,
+      );
     }
   }
 
-  /// Same row-stamping as [_drawMaskRuns] but each row paints a
-  /// single full-width rect filled by the gradient shader above the
-  /// row's visited mask. The result reads as the same fill, just
-  /// gradient-shaded. Cheaper than stamping every fragment because
-  /// the painter's shader path stays in Dart-only math — no
-  /// per-pixel work. Same mask pattern, fewer drawRect calls (~rows
-  /// instead of ~runs).
-  void _drawMaskRunsShader(
+  void _drawSpansShader(
     Canvas canvas,
     FillRegion region,
     Paint paint,
-    GradientPair gradient,
   ) {
-    final Uint8List visited = _visitedFromMask(region);
-    for (int y = 0; y < region.height; y++) {
-      int runStart = -1;
-      for (int x = 0; x < region.width; x++) {
-        final int idx = y * region.width + x;
-        final int visitedByte = visited[idx];
-        if (visitedByte != 0) {
-          if (runStart < 0) runStart = x;
-        } else if (runStart >= 0) {
-          // One rect per contiguous run; the shader covers the
-          // painted region so we don't need per-pixel correctness
-          // (optionally M2.4 polish swaps to drawImage once we
-          // want to ship per-pixel precision for partial-alpha
-          // gradient stops).
-          canvas.drawRect(
-            Rect.fromLTWH(
-              runStart.toDouble(),
-              y.toDouble(),
-              (x - runStart).toDouble(),
-              1.0,
-            ),
-            paint,
-          );
-          runStart = -1;
-        }
-      }
-      if (runStart >= 0) {
-        canvas.drawRect(
-          Rect.fromLTWH(
-            runStart.toDouble(),
-            y.toDouble(),
-            (region.width - runStart).toDouble(),
-            1.0,
-          ),
-          paint,
-        );
-      }
-    }
+    // M2.3 - identical loop to [_drawSpans]; the gradient shader on
+    // [paint] handles per-row shading automatically.
+    _drawSpans(canvas, region, paint);
   }
 
-  /// Decodes the alpha channel of an RGBA8888 mask into a Uint8List
-  /// for run-stamping. Returns `region.mask` as-is if the runner was
-  /// already a Uint8List-backed structure (test expectation).
-  Uint8List _visitedFromMask(FillRegion region) {
-    final int size = region.mask.length ~/ 4;
-    final Uint8List out = Uint8List(size);
-    for (int i = 0; i < size; i++) {
-      out[i] = region.mask[i * 4 + 3];
-    }
-    return out;
-  }
-
-
-  // ── Brush: ROUND ──────────────────────────────────────────────────
+  // ── Brush: ROUND ────────────────────────────────────────────────────
   void _round(Canvas canvas, DrawingStroke stroke) {
     final Path path = _pathFrom(stroke.points);
     canvas.drawPath(
@@ -338,7 +256,7 @@ class BrushPainter {
     );
   }
 
-  // ── Brush: MARKER ─────────────────────────────────────────────────
+  // ── Brush: MARKER ───────────────────────────────────────────────────
   void _marker(Canvas canvas, DrawingStroke stroke) {
     final Path path = _pathFrom(stroke.points);
     canvas.drawPath(
@@ -365,7 +283,7 @@ class BrushPainter {
     );
   }
 
-  // ── Brush: CRAYON ─────────────────────────────────────────────────
+  // ── Brush: CRAYON ───────────────────────────────────────────────────
   void _crayon(Canvas canvas, DrawingStroke stroke) {
     final math.Random rng = math.Random(stroke.textureSeed);
     final Paint base = Paint()
@@ -373,25 +291,24 @@ class BrushPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth =
-          stroke.brushSize * BrushPaintConstants.crayonWidthFactor
+      ..strokeWidth = stroke.brushSize * BrushPaintConstants.crayonWidthFactor
       ..isAntiAlias = true;
     canvas.drawPath(_pathFrom(stroke.points), base);
 
     final List<double> jittered = <double>[];
     for (int i = 0; i < stroke.pointCount; i++) {
       final (double dx, double dy) = stroke.pointAt(i);
-      final double jx = (rng.nextDouble() - 0.5) *
-          BrushPaintConstants.crayonJitterMagnitude;
-      final double jy = (rng.nextDouble() - 0.5) *
-          BrushPaintConstants.crayonJitterMagnitude;
+      final double jx =
+          (rng.nextDouble() - 0.5) * BrushPaintConstants.crayonJitterMagnitude;
+      final double jy =
+          (rng.nextDouble() - 0.5) * BrushPaintConstants.crayonJitterMagnitude;
       jittered.add(dx + jx);
       jittered.add(dy + jy);
     }
     canvas.drawPath(_pathFrom(jittered), base);
   }
 
-  // ── Brush: SPARKLE ────────────────────────────────────────────────
+  // ── Brush: SPARKLE ──────────────────────────────────────────────────
   void _sparkle(
     Canvas canvas,
     DrawingStroke stroke, {
@@ -401,7 +318,7 @@ class BrushPainter {
       return;
     }
     final Color tint = Color(stroke.colorValue);
-    final Color highlight = const Color(0xFFFFF6C7);
+    const Color highlight = Color(0xFFFFF6C7);
     final double spacing = reduceMotion
         ? BrushPaintConstants.sparkleStampSpacing * 2.0
         : BrushPaintConstants.sparkleStampSpacing;
@@ -450,7 +367,7 @@ class BrushPainter {
     );
   }
 
-  // ── Brush: ERASER ─────────────────────────────────────────────────
+  // ── Brush: ERASER ───────────────────────────────────────────────────
   void _eraser(Canvas canvas, DrawingStroke stroke) {
     canvas.drawPath(
       _pathFrom(stroke.points),
@@ -465,19 +382,17 @@ class BrushPainter {
     );
   }
 
-  // ── Brush: PENCIL (M2.3) ──────────────────────────────────────────
-  /// Thin dark line with tiny per-point jitter and a low-alpha secondary
-  /// "seed" pass — reads as a graphite pencil on paper.
+  // ── Brush: PENCIL (M2.3) ───────────────────────────────────────────
   void _pencil(Canvas canvas, DrawingStroke stroke) {
     final math.Random rng = math.Random(stroke.textureSeed);
     final Path jagged = Path();
     final List<double> jittered = <double>[];
     for (int i = 0; i < stroke.pointCount; i++) {
       final (double dx, double dy) = stroke.pointAt(i);
-      final double jx = (rng.nextDouble() - 0.5) *
-          BrushPaintConstants.pencilJitterMagnitude;
-      final double jy = (rng.nextDouble() - 0.5) *
-          BrushPaintConstants.pencilJitterMagnitude;
+      final double jx =
+          (rng.nextDouble() - 0.5) * BrushPaintConstants.pencilJitterMagnitude;
+      final double jy =
+          (rng.nextDouble() - 0.5) * BrushPaintConstants.pencilJitterMagnitude;
       jittered.add(dx + jx);
       jittered.add(dy + jy);
     }
@@ -490,11 +405,9 @@ class BrushPainter {
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
-        ..strokeWidth = stroke.brushSize * 0.5 // pencil is thinner than round
+        ..strokeWidth = stroke.brushSize * 0.5
         ..isAntiAlias = true,
     );
-    // Faint second pass: same path, jittered offsets, low alpha — reads as
-    // a graphitic noise overlay.
     canvas.drawPath(
       _pathFrom(jittered),
       Paint()
@@ -508,7 +421,7 @@ class BrushPainter {
     );
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────
   Path _pathFrom(List<double> flat) {
     final Path out = Path();
     if (flat.length < 4) {
@@ -522,9 +435,8 @@ class BrushPainter {
   }
 }
 
-
 /// Top-level helper kept for parity with brush extraction. Strips a
-/// [DrawingStroke] to its tight bounding box. Padding in logical px
+/// DrawingStroke to its tight bounding box. Padding in logical px
 /// ensures stroke-cap + sparkle stamp + bleed pass do not clip
 /// the picture bounds.
 ({
