@@ -35,6 +35,7 @@ import '../../../../core/design/design_tokens.dart'
     show AppSpacing, AppDuration;
 import '../../../../core/routing/app_router.dart' show GoRouterContextX;
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/services/world_unlock/first_unlock_service.dart';
 import '../../../../core/state/navigation_state.dart';
 import '../../../../core/state/player_state.dart';
 import '../../../../core/state/settings_state.dart';
@@ -46,6 +47,7 @@ import '../../../../core/utils/haptics.dart';
 import '../../../../core/widgets/animated_background.dart';
 import '../../../../core/widgets/magic_card.dart';
 import '../../../../core/widgets/outline_pulse.dart';
+import '../widgets/first_unlock_dialog.dart';
 
 // ── Frozen tuning constants ──────────────────────────────────────────────────
 
@@ -387,11 +389,56 @@ class _WorldMapScreenState extends State<WorldMapScreen>
   )..repeat();
 
   @override
+  void initState() {
+    super.initState();
+    // Sprint 6 — trigger the FirstUnlockDialog for the first
+    // uncelebrated world the player owns. One-shot per world via
+    // PlayerState.celebratedWorldIds, so subsequent visits are
+    // silent. Deferred one frame so the Provider is mounted and
+    // the screen is laid out before the dialog is presented.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _maybeShowFirstUnlockDialog();
+    });
+  }
+
+  @override
   void dispose() {
     _float.dispose();
     _cloud.dispose();
     _shimmer.dispose();
     super.dispose();
+  }
+
+  /// Sprint 6 — picks the first owned + uncelebrated world and pops
+  /// the [FirstUnlockDialog]. Silently no-ops when every owned
+  /// world has been celebrated. Catalog is taken from the file-
+  /// private [_kWorldCatalog] so the trigger walks the same
+  /// world order the map renders.
+  void _maybeShowFirstUnlockDialog() {
+    final PlayerState player = context.read<PlayerState>();
+    final List<WorldRef> refs = <WorldRef>[
+      for (final WorldData w in _kWorldCatalog)
+        (
+          id: w.id,
+          isPremiumWorld: w.isPremiumWorld,
+          starsForUnlock: w.starsForUnlock,
+        ),
+    ];
+    final List<WorldRef> uncelebrated =
+        FirstUnlockService.discoverUncelebrated(refs, player);
+    if (uncelebrated.isEmpty) return;
+    final WorldRef first = uncelebrated.first;
+    final WorldData match = _kWorldCatalog.firstWhere(
+      (WorldData w) => w.id == first.id,
+      orElse: () => _kWorldCatalog.first,
+    );
+    showFirstUnlockDialog(
+      context,
+      worldId: match.id,
+      worldTitle: match.title,
+      worldGlyph: match.glyph,
+    );
   }
 
   @override
@@ -1509,6 +1556,11 @@ class _IslandViewModel {
     // Sprint 4b — derived state flags the island render branches on.
     final bool isCurrent = unlocked && currentWorldId == world.id;
     final bool isCompleted = unlocked && stableStars >= 3;
+    // Sprint 6 — true when the player owns the world AND has not
+    // dismissed the FirstUnlockDialog yet. Drives the "NEW" badge
+    // on the island card.
+    final bool isUncelebrated =
+        unlocked && !player.celebratedWorldIds.contains(world.id);
     final String? requirementsText = _resolveRequirementsText(
       unlocked: unlocked,
       premiumGate: premiumGate,
@@ -1533,6 +1585,7 @@ class _IslandViewModel {
       shouldShowFocusPulse: shouldShowFocusPulse,
       isCurrent: isCurrent,
       isCompleted: isCompleted,
+      isUncelebrated: isUncelebrated,
       requirementsText: requirementsText,
       completionState: completionState,
     );
@@ -1572,6 +1625,7 @@ class _IslandViewModel {
     required this.shouldShowFocusPulse,
     required this.isCurrent,
     required this.isCompleted,
+    required this.isUncelebrated,
     required this.requirementsText,
     required this.completionState,
   });
@@ -1610,6 +1664,12 @@ class _IslandViewModel {
   /// earned all 3 stars. Drives the trophy badge + removes the
   /// difficulty chip in favour of a "DONE" pill.
   final bool isCompleted;
+
+  /// Sprint 6 — true iff the world is unlocked AND the player has
+  /// not yet dismissed the FirstUnlockDialog. Drives the small
+  /// "NEW" badge on the island card top-right corner. Reset to
+  /// false once the dialog marks the world as celebrated.
+  final bool isUncelebrated;
 
   /// Sprint 4b — short copy for the locked-tile overlay. Null when
   /// the world is unlocked (no overlay needed). Either "Premium
@@ -1664,6 +1724,11 @@ class _IslandBody extends StatelessWidget {
                 const _CompletedBadge()
               else
                 _DifficultyChip(difficulty: vm.world.difficulty),
+              // Sprint 6 — small "NEW" badge on first-visit islands.
+              // Sits BEFORE the Premium / Current badges so the
+              // celebratory "NEW" cue is the loudest thing on the
+              // tile during the first visit.
+              if (vm.isUncelebrated) const _NewBadge(),
               if (vm.isPremiumGateLocked) const _LockBadge(),
               if (vm.isPremiumView && !vm.isPremiumGateLocked)
                 const _PremiumBadge(),
@@ -1739,6 +1804,50 @@ class _IslandBody extends StatelessWidget {
         '${vm.completionPct}% complete'
         '${vm.isPremiumGateLocked ? ', $_kPremiumGateFragment' : ''}'
         '${vm.requirementsText != null && !vm.unlocked ? ', ${vm.requirementsText}' : ''}';
+  }
+}
+
+// =============================================================================
+//  _NewBadge — Sprint 6 small "NEW" pill rendered on freshly-unlocked
+//  islands. Sits in the top row of the island body so the kid sees
+//  the celebratory cue on first visit; disappears the moment the
+//  FirstUnlockDialog is dismissed (PlayerState.celebratedWorldIds
+//  adds the id). Pill family mirrors _CurrentBadge / _CompletedBadge.
+// =============================================================================
+
+class _NewBadge extends StatelessWidget {
+  const _NewBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'New world',
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: _kDifficultyChipHPadding,
+          vertical: _kDifficultyChipVPadding,
+        ),
+        decoration: const BoxDecoration(
+          color: AppColors.tangerine,
+          borderRadius: AppCorner.brSm,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Text('✨', style: TextStyle(fontSize: _kPillGlyphSize)),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              'NEW',
+              style: AppTypography.labelMd.copyWith(
+                color: AppColors.cloudWhite,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

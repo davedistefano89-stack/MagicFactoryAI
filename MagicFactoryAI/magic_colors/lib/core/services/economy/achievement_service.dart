@@ -224,6 +224,44 @@ const CompositeReward _galleryFilledReward = CompositeReward(
   ],
 );
 
+// Sprint 6 — World Progression achievement rewards. All four
+// follow the v1.0 pattern: a single tier-appropriate reward,
+// triggered by CompletionRewardService (for first_world_completed
+// and all_worlds_completed) OR by the AchievementService.evaluate
+// call in any state-mutating code path (for the 10/20 stars
+// milestones).
+const CompositeReward _firstWorldCompletedReward = CompositeReward(
+  reason: 'achievement.first_world_completed',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.first_world_completed', amount: 75),
+    GemReward(reason: 'achievement.first_world_completed', amount: 3),
+  ],
+);
+
+const CompositeReward _allWorldsCompletedReward = CompositeReward(
+  reason: 'achievement.all_worlds_completed',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.all_worlds_completed', amount: 500),
+    GemReward(reason: 'achievement.all_worlds_completed', amount: 20),
+  ],
+);
+
+const CompositeReward _starCollectorTenReward = CompositeReward(
+  reason: 'achievement.star_collector_ten',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.star_collector_ten', amount: 50),
+    GemReward(reason: 'achievement.star_collector_ten', amount: 2),
+  ],
+);
+
+const CompositeReward _starCollectorTwentyReward = CompositeReward(
+  reason: 'achievement.star_collector_twenty',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.star_collector_twenty', amount: 150),
+    GemReward(reason: 'achievement.star_collector_twenty', amount: 5),
+  ],
+);
+
 // ── Evaluation helpers per achievement ────────────────────────────────────
 
 // Each `_isXxxUnlocked(snapshot)` is the unlockCondition. They are
@@ -274,6 +312,34 @@ bool _isPremiumCuriousUnlocked(PlayerSnapshot s) => s.isPremium;
 
 bool _isGalleryFilledUnlocked(PlayerSnapshot s) =>
     s.worldStars.values.where((int stars) => stars > 0).length >= 5;
+
+// ── Sprint 6 — World Progression achievements ────────────────────────────
+
+bool _isFirstWorldCompletedUnlocked(PlayerSnapshot s) {
+  // First world finished = at least one world with all 3 stars.
+  return s.worldStars.values.any((int stars) => stars >= 3);
+}
+
+bool _isAllWorldsCompletedUnlocked(PlayerSnapshot s) {
+  // All 10 catalog worlds fully starred. Uses the total-stars heuristic
+  // (10 worlds × 3 stars = 30) so the v1.0 achievement doesn't
+  // accidentally fire from a cluster of partially-completed worlds.
+  final int totalStars =
+      s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
+  return totalStars >= 30;
+}
+
+bool _isStarCollectorTenUnlocked(PlayerSnapshot s) {
+  final int totalStars =
+      s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
+  return totalStars >= 10;
+}
+
+bool _isStarCollectorTwentyUnlocked(PlayerSnapshot s) {
+  final int totalStars =
+      s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
+  return totalStars >= 20;
+}
 
 // =============================================================================
 //  AchievementService — pure-function catalog + evaluator.
@@ -470,6 +536,43 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       tier: AchievementTier.silver,
       reward: _galleryFilledReward,
       unlockCondition: _isGalleryFilledUnlocked,
+    ),
+    // ── Sprint 6 — World Progression achievements (4 new entries) ────
+    const AchievementDefinition(
+      id: 'first_world_completed',
+      title: 'First World Conquered',
+      glyph: '🌍',
+      description: 'Earn all 3 stars in any world.',
+      tier: AchievementTier.silver,
+      reward: _firstWorldCompletedReward,
+      unlockCondition: _isFirstWorldCompletedUnlocked,
+    ),
+    const AchievementDefinition(
+      id: 'star_collector_ten',
+      title: 'Star Collector',
+      glyph: '⭐',
+      description: 'Earn 10 stars across all worlds.',
+      tier: AchievementTier.bronze,
+      reward: _starCollectorTenReward,
+      unlockCondition: _isStarCollectorTenUnlocked,
+    ),
+    const AchievementDefinition(
+      id: 'star_collector_twenty',
+      title: 'Star Hoarder',
+      glyph: '🌟',
+      description: 'Earn 20 stars across all worlds.',
+      tier: AchievementTier.silver,
+      reward: _starCollectorTwentyReward,
+      unlockCondition: _isStarCollectorTwentyUnlocked,
+    ),
+    const AchievementDefinition(
+      id: 'all_worlds_completed',
+      title: 'World Champion',
+      glyph: '🏅',
+      description: 'Earn 3 stars in every world.',
+      tier: AchievementTier.gold,
+      reward: _allWorldsCompletedReward,
+      unlockCondition: _isAllWorldsCompletedUnlocked,
     ),
   ];
 }

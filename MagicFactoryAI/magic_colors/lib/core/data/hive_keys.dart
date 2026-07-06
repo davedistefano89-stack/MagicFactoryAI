@@ -68,3 +68,36 @@ const String hiveKeyParentGateMathOk = 'player.parentGateMathOk';
 /// Producer + reader: PlayerState. `DateTime?`. Set on failure; the
 /// gate remains locked until 24 h after this stamp.
 const String hiveKeyParentGateLastFailureAt = 'player.parentGateLastFailureAt';
+
+// ── Sprint 5 Shop ownership keys ─────────────────────────────────
+
+/// Key for the owned palette-pack ids. Producer: PlayerState
+/// (`grantPalettePack` / `ownedPalettePackIds`). Consumed by
+/// `UnlockService.owns` to flip the Shop card to OWNED.
+///   `List<String>` of stable ids (kebab/snake). Set semantics.
+const String hiveKeyOwnedPalettePackIds = 'player.ownedPalettePackIds';
+
+/// Key for the owned brush ids. Producer: PlayerState
+/// (`grantBrush` / `ownedBrushIds`). Consumed by `UnlockService.owns`.
+///   `List<String>` of stable ids. Set semantics.
+const String hiveKeyOwnedBrushIds = 'player.ownedBrushIds';
+
+/// Key for the owned gradient ids. Producer: PlayerState
+/// (`grantGradient` / `ownedGradientIds`). Consumed by
+/// `UnlockService.owns`.   `List<String>` of stable ids.
+const String hiveKeyOwnedGradientIds = 'player.ownedGradientIds';
+
+// ── Sprint 6 World Progression keys ─────────────────────────────────────
+
+/// Key for the celebrated-world-id set. Producer: PlayerState
+/// (`markWorldCelebrated` / `celebratedWorldIds`). Consumed by
+/// `FirstUnlockService` to skip worlds whose "NEW" toast has
+/// already been dismissed.   `List<String>` of stable ids (kebab).
+/// Set semantics.
+const String hiveKeyCelebratedWorldIds = 'player.celebratedWorldIds';
+
+/// Key for the claimed-world-reward-id set. Producer: PlayerState
+/// (`claimWorldCompletionReward` / `claimedWorldRewardIds`).
+/// Consumed by `CompletionRewardService` to make the claim
+/// idempotent.   `List<String>` of stable ids (kebab). Set semantics.
+const String hiveKeyClaimedWorldRewardIds = 'player.claimedWorldRewardIds';

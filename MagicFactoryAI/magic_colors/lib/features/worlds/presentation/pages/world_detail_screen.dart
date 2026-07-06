@@ -34,17 +34,23 @@ import '../../../../core/design/design_tokens.dart' show AppSpacing;
 import '../../../../core/routing/app_router.dart' show GoRouterContextX;
 import '../../../../core/routing/app_routes.dart' show HomeTab;
 import '../../../../core/services/analytics_service.dart';
+import '../../../../core/services/world_unlock/completion_reward_service.dart';
+import '../../../../core/services/world_unlock/world_unlock_service.dart';
+import '../../../../core/domain/world/world_status.dart';
 import '../../../../core/state/navigation_state.dart';
 import '../../../../core/state/player_state.dart';
+
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_gradients.dart';
 import '../../../../core/theme/app_shape.dart';
 import '../../../../core/theme/app_typography.dart';
 import '../../../../core/utils/haptics.dart';
+import '../../../../core/utils/logger.dart' show logger;
 import '../../../../core/widgets/animated_background.dart';
 import '../../../../core/widgets/magic_card.dart';
 import '../../../../core/widgets/parent_gate.dart';
 import '../../../../core/widgets/primary_button.dart';
+import '../../data/world_progress_catalog.dart';
 
 // ── Frozen tuning constants ──────────────────────────────────────────────────
 
@@ -419,6 +425,13 @@ class _DetailBody extends StatelessWidget {
           _AccentCta(accent: accent, world: found),
           AppSpacing.vGapLg,
           _OutlineStatsRow(world: found, accent: accent, player: player),
+          AppSpacing.vGapLg,
+          // Sprint 6 — per-world progress section. Always visible
+          // (zero-state is fine; locked worlds just show 0/3 levels
+          // + the next-goal text). The reward claim CTA only renders
+          // when the world is completed AND the reward hasn't been
+          // claimed yet.
+          _WorldProgressSection(world: found, player: player),
           AppSpacing.vGapLg,
           _GalleryShortcutRow(world: found),
         ],
@@ -887,6 +900,301 @@ class _CompletionBigReadout extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//  _WorldProgressSection — Sprint 6 — per-world progress block:
+//  total/completed levels, completion %, available rewards, claim
+//  CTA, next goal. Sits between the existing _OutlineStatsRow and
+//  the _GalleryShortcutRow so the visual hierarchy is:
+//    hero → description → primary CTA → stats → progress → gallery.
+//
+//  Reward claim is gated by:
+//    1. The world is `unlocked` (the player has earned at least
+//       `starsForUnlock` stars OR owns a Premium subscription).
+//    2. The world is fully completed (3 stars earned).
+//    3. The reward hasn't been claimed yet
+//       (PlayerState.claimedWorldRewardIds).
+//  When all three are true, the section renders a tinted
+//  "Claim N coins + N gems" CTA; tapping it routes through
+//  CompletionRewardService.grantCompletion which mutates
+//  PlayerState and fires the right analytics.
+// =============================================================================
+
+class _WorldProgressSection extends StatelessWidget {
+  const _WorldProgressSection({required this.world, required this.player});
+
+  final WorldData world;
+  final PlayerState player;
+
+  void _onClaim(BuildContext context) {
+    AnalyticsService.instance.trackEvent(
+      'world_completion_reward_claimed',
+      <String, Object?>{'id': world.id},
+    );
+    Haptics.success();
+    final CompletionRewardResult result =
+        CompletionRewardService.grantCompletion(
+      worldId: world.id,
+      player: player,
+    );
+    logger.info(
+      'WorldProgressSection.claim(${world.id}) → $result',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final WorldProgressLite progress = WorldProgressLite.from(
+      world: world,
+      player: player,
+    );
+
+    return MagicCard(
+      skin: MagicCardSkin.tinted,
+      padding: AppSpacing.cardPaddingGenerous,
+      borderRadius: AppCorner.brLg,
+      borderColor: AppColors.magicPurple.withValues(alpha: 0.20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text('Progress', style: AppTypography.titleSm),
+          AppSpacing.vGapSm,
+          _LevelsRow(
+            completed: progress.completedLevels,
+            total: progress.totalLevels,
+          ),
+          AppSpacing.vGapSm,
+          _ProgressMeter(pct: progress.completionPct),
+          AppSpacing.vGapMd,
+          if (progress.hasReward)
+            _NextGoalCaption(progress: progress, world: world),
+          if (progress.isRewardReady) ...<Widget>[
+            AppSpacing.vGapMd,
+            PrimaryButton(
+              label: progress.claimLabel,
+              fullWidth: true,
+              gradient: AppGradients.playNow,
+              onPressed: () => _onClaim(context),
+            ),
+          ] else if (progress.isRewardClaimed) ...<Widget>[
+            AppSpacing.vGapMd,
+            _ClaimedBadge(),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Lightweight view-model for the progress section. Composed off
+/// PlayerState + the catalog row, so the widget stays a pure
+/// function of the inputs. Decoupled from the heavier
+/// WorldProgress model in `core/domain/world/` so the section can
+/// render in the same frame the screen builds.
+@immutable
+class WorldProgressLite {
+  const WorldProgressLite._({
+    required this.completedLevels,
+    required this.totalLevels,
+    required this.completionPct,
+    required this.hasReward,
+    required this.isRewardReady,
+    required this.isRewardClaimed,
+    required this.claimLabel,
+    required this.nextGoalText,
+  });
+
+  factory WorldProgressLite.from({
+    required WorldData world,
+    required PlayerState player,
+  }) {
+    final WorldStatus status = WorldUnlockService.computeStatus(
+      world.id,
+      isPremiumWorld: world.isPremiumWorld,
+      starsForUnlock: world.starsForUnlock,
+      player: player,
+    );
+    final int totalLevels = totalLevelsFor(world.id);
+    final int completedLevels = player.getWorldStars(world.id).clamp(0, 3);
+    final int pct = totalLevels == 0
+        ? 0
+        : (completedLevels * 100 / totalLevels).toInt().clamp(0, 100);
+    final bool hasReward = CompletionRewardService.hasReward(world.id);
+    final bool isClaimed = CompletionRewardService.isClaimed(player, world.id);
+    final bool isReady = status == WorldStatus.completed && !isClaimed;
+    final String claimLabel = _buildClaimLabel(world.id);
+    final String nextGoalText = _buildNextGoal(
+      world: world,
+      status: status,
+      completed: completedLevels,
+      total: totalLevels,
+    );
+    return WorldProgressLite._(
+      completedLevels: completedLevels,
+      totalLevels: totalLevels,
+      completionPct: pct,
+      hasReward: hasReward,
+      isRewardReady: isReady,
+      isRewardClaimed: isClaimed,
+      claimLabel: claimLabel,
+      nextGoalText: nextGoalText,
+    );
+  }
+
+  final int completedLevels;
+  final int totalLevels;
+  final int completionPct;
+  final bool hasReward;
+  final bool isRewardReady;
+  final bool isRewardClaimed;
+  final String claimLabel;
+  final String nextGoalText;
+
+  static String _buildClaimLabel(String worldId) {
+    final dynamic r = rewardFor(worldId);
+    if (r == null) return 'Claim reward';
+    final int coins = (r.coins as int?) ?? 0;
+    final int gems = (r.gems as int?) ?? 0;
+    final List<String> parts = <String>[];
+    if (coins > 0) parts.add('🪙 $coins');
+    if (gems > 0) parts.add('💎 $gems');
+    if (parts.isEmpty) return 'Claim reward';
+    return 'Claim ${parts.join(' + ')}';
+  }
+
+  static String _buildNextGoal({
+    required WorldData world,
+    required WorldStatus status,
+    required int completed,
+    required int total,
+  }) {
+    switch (status) {
+      case WorldStatus.locked:
+        if (world.isPremiumWorld) {
+          return 'Next: subscribe to open this world.';
+        }
+        return 'Next: earn ${world.starsForUnlock} stars to unlock.';
+      case WorldStatus.available:
+        if (completed >= total) {
+          return 'All levels done — claim your reward below!';
+        }
+        return 'Next: finish ${total - completed} more '
+            'level${total - completed == 1 ? '' : 's'} to claim the reward.';
+      case WorldStatus.current:
+        return 'Currently playing — finish this world to claim the reward.';
+      case WorldStatus.completed:
+        return 'All levels complete!';
+    }
+  }
+}
+
+class _LevelsRow extends StatelessWidget {
+  const _LevelsRow({required this.completed, required this.total});
+
+  final int completed;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: <Widget>[
+        Text(
+          'Levels',
+          style: AppTypography.labelMd.copyWith(color: AppColors.smoke),
+        ),
+        Text(
+          '$completed / $total',
+          style: AppTypography.titleSm,
+        ),
+      ],
+    );
+  }
+}
+
+class _ProgressMeter extends StatelessWidget {
+  const _ProgressMeter({required this.pct});
+
+  final int pct;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '$pct percent complete',
+      child: Stack(
+        children: <Widget>[
+          Container(
+            height: _kBigMeterHeight,
+            decoration: BoxDecoration(
+              color: AppColors.smoke.withValues(alpha: 0.20),
+              borderRadius: AppCorner.brSm,
+            ),
+          ),
+          FractionallySizedBox(
+            widthFactor: (pct / 100).clamp(0.0, 1.0),
+            child: Container(
+              height: _kBigMeterHeight,
+              decoration: const BoxDecoration(
+                gradient: AppGradients.secondaryCta,
+                borderRadius: AppCorner.brSm,
+                boxShadow: AppElevation.softChip,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NextGoalCaption extends StatelessWidget {
+  const _NextGoalCaption({required this.progress, required this.world});
+
+  final WorldProgressLite progress;
+  final WorldData world;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      progress.nextGoalText,
+      style: AppTypography.bodyMedium.copyWith(color: AppColors.smoke),
+    );
+  }
+}
+
+class _ClaimedBadge extends StatelessWidget {
+  const _ClaimedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.success.withValues(alpha: 0.18),
+        borderRadius: AppCorner.brSm,
+        border: Border.all(color: AppColors.success),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          const Text('✅', style: TextStyle(fontSize: 18)),
+          const SizedBox(width: AppSpacing.xs),
+          Text(
+            'Reward claimed',
+            style: AppTypography.titleSm.copyWith(
+              color: AppColors.success,
             ),
           ),
         ],

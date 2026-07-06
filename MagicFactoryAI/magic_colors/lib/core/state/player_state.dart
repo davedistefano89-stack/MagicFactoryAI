@@ -63,6 +63,19 @@ const String _kUnlockedColorIdsKey = hiveKeyUnlockedColorIds;
 // M2.4 — ParentGate persistence.
 const String _kParentGateMathOkKey = hiveKeyParentGateMathOk;
 const String _kParentGateLastFailureAtKey = hiveKeyParentGateLastFailureAt;
+// Sprint 5 — Shop ownership persistence. Keys live in
+// core/data/hive_keys.dart so a rename can never desync the writer
+// (PlayerState) from the reader (UnlockService).
+const String _kOwnedPalettePackIdsKey = hiveKeyOwnedPalettePackIds;
+const String _kOwnedBrushIdsKey = hiveKeyOwnedBrushIds;
+const String _kOwnedGradientIdsKey = hiveKeyOwnedGradientIds;
+// Sprint 6 — World Progression persistence. Same convention: keys
+// live in core/data/hive_keys.dart so a rename can never desync
+// the writer (PlayerState) from the reader
+// (FirstUnlockService / CompletionRewardService / world_detail
+// progress section).
+const String _kCelebratedWorldIdsKey = hiveKeyCelebratedWorldIds;
+const String _kClaimedWorldRewardIdsKey = hiveKeyClaimedWorldRewardIds;
 
 // =============================================================================
 //  PlayerState — ChangeNotifier.
@@ -155,6 +168,20 @@ final class PlayerState extends ChangeNotifier {
   /// stars). Persisted as a `List<int>`.
   List<int> _unlockedColorIds = <int>[];
 
+  // ── Sprint 5 — Shop ownership state ──────────────────────────────────────
+  /// Palette pack ids the player has bought from the Shop. Backed by
+  /// Hive so ownership survives crashes. The Shop card uses this set
+  /// to render the OWNED status badge.
+  Set<String> _ownedPalettePackIds = const <String>{};
+
+  /// Brush ids the player has bought from the Shop. Same persistence
+  /// contract as the palette-pack set.
+  Set<String> _ownedBrushIds = const <String>{};
+
+  /// Gradient ids the player has bought from the Shop. Same
+  /// persistence contract as the palette-pack set.
+  Set<String> _ownedGradientIds = const <String>{};
+
   /// M2.4 — ParentGate math-challenge accept flag. True once the user
   /// has successfully solved the math challenge; flips back to false
   /// after a failed attempt. Persisted as `bool`.
@@ -164,6 +191,18 @@ final class PlayerState extends ChangeNotifier {
   /// the gate is locked for [parentGateFailLockout] from this time.
   /// `null` when there has never been a failure.
   DateTime? _parentGateLastFailureAt;
+
+  // ── Sprint 6 — World Progression state ──────────────────────────────────
+  /// World ids whose "NEW" celebration the player has dismissed.
+  /// Backed by Hive so the celebration is genuinely one-shot across
+  /// sessions. The World Map uses this set to drop the "NEW" badge
+  /// from islands whose dialog has been seen.
+  Set<String> _celebratedWorldIds = const <String>{};
+
+  /// World ids whose completion reward has been claimed at least
+  /// once. Backed by Hive so the claim is idempotent across
+  /// sessions. CompletionRewardService refuses to grant twice.
+  Set<String> _claimedWorldRewardIds = const <String>{};
 
   int get coins => _coins;
   int get gems => _gems;
@@ -207,6 +246,37 @@ final class PlayerState extends ChangeNotifier {
 
   /// Read-only view of the unlocked tier-1 colour indexes.
   List<int> get unlockedColorIds => List<int>.unmodifiable(_unlockedColorIds);
+
+  // ── Sprint 5 — Shop ownership read ───────────────────────────────────────
+  /// Read-only view of the owned palette-pack ids (set by the Shop
+  /// card tap → UnlockService).
+  Set<String> get ownedPalettePackIds =>
+      Set<String>.unmodifiable(_ownedPalettePackIds);
+
+  /// Read-only view of the owned brush ids.
+  Set<String> get ownedBrushIds => Set<String>.unmodifiable(_ownedBrushIds);
+
+  /// Read-only view of the owned gradient ids.
+  Set<String> get ownedGradientIds =>
+      Set<String>.unmodifiable(_ownedGradientIds);
+
+  // ── Sprint 6 — World Progression read ──────────────────────────────────
+  /// Read-only view of the celebrated-world-id set.
+  Set<String> get celebratedWorldIds =>
+      Set<String>.unmodifiable(_celebratedWorldIds);
+
+  /// Read-only view of the claimed-world-reward-id set.
+  Set<String> get claimedWorldRewardIds =>
+      Set<String>.unmodifiable(_claimedWorldRewardIds);
+
+  /// True iff the player has celebrated [worldId] (the "NEW" toast
+  /// has been dismissed at least once).
+  bool hasCelebratedWorld(String worldId) =>
+      _celebratedWorldIds.contains(worldId);
+
+  /// True iff the completion reward for [worldId] has been claimed.
+  bool hasClaimedWorldReward(String worldId) =>
+      _claimedWorldRewardIds.contains(worldId);
 
   // ── M2.4 — ParentGate read ──────────────────────────────────────────
   /// True iff the user has successfully completed a math challenge
@@ -252,6 +322,15 @@ final class PlayerState extends ChangeNotifier {
   bool ownsWorld(String worldId) => _ownedWorldIds.contains(worldId);
   bool canAffordCoins(int cost) => _coins >= cost;
   bool canAffordGems(int cost) => _gems >= cost;
+
+  // Sprint 5 — Shop ownership predicates. Cheap O(1) lookups so the
+  // Shop card status can be derived per-rebuild without thrashing the
+  // map.
+  bool ownsPalettePack(String packId) =>
+      _ownedPalettePackIds.contains(packId);
+  bool ownsBrush(String brushId) => _ownedBrushIds.contains(brushId);
+  bool ownsGradient(String gradientId) =>
+      _ownedGradientIds.contains(gradientId);
 
   // ── Currency mutators ─────────────────────────────────────────────────
   /// Adds `amount` coins. Negative values are ignored. Idempotent for
@@ -591,6 +670,19 @@ final class PlayerState extends ChangeNotifier {
     _parentGateMathOk = _readOrDefault<bool>(_kParentGateMathOkKey, false);
     _parentGateLastFailureAt =
         _readOrNull<DateTime>(_kParentGateLastFailureAtKey);
+
+    // Sprint 5 hydrate — 3 Shop ownership sets. Same fault-tolerant
+    // contract as `_unlockedAchievementIds` (rebuild from a List on
+    // cast failure).
+    _ownedPalettePackIds = _readIdSet(_kOwnedPalettePackIdsKey);
+    _ownedBrushIds = _readIdSet(_kOwnedBrushIdsKey);
+    _ownedGradientIds = _readIdSet(_kOwnedGradientIdsKey);
+
+    // Sprint 6 hydrate — 2 World Progression sets. Same fault-
+    // tolerant contract. Both default to empty so a corrupted box
+    // cannot trigger a spurious celebration or re-grant a reward.
+    _celebratedWorldIds = _readIdSet(_kCelebratedWorldIdsKey);
+    _claimedWorldRewardIds = _readIdSet(_kClaimedWorldRewardIdsKey);
   }
 
   // ── M2.4 — ParentGate mutators ───────────────────────────────────────
@@ -782,9 +874,119 @@ final class PlayerState extends ChangeNotifier {
     _persist(key, values);
   }
 
+  // ── Sprint 5 — Shop ownership mutators ───────────────────────────────────
+
+  /// Test seam — sets the economy balances in one call so unit tests
+  /// can pin exact values without paying the cost of running a real
+  /// earn/spend cycle (the default of 5 gems would otherwise skew
+  /// every gem-balance assertion by 5). Production callers MUST use
+  /// [grantCoins] / [grantGems]; the `@visibleForTesting` annotation
+  /// is the analyzer guard.
+  @visibleForTesting
+  void setEconomyForTest({int coins = 0, int gems = 0}) {
+    _coins = coins;
+    _gems = gems;
+    _persist(_kCoinsKey, _coins);
+    _persist(_kGemsKey, _gems);
+    notifyListeners();
+  }
+
+  /// Records that the player has bought [packId] from the Shop. Idempotent
+  /// (a second call is a no-op). Called by [UnlockService.grantPalettePack]
+  /// after the currency deduction succeeds.
+  void grantPalettePack(String packId, {String reason = 'shop.palette_pack'}) {
+    if (packId.isEmpty) {
+      return;
+    }
+    if (_ownedPalettePackIds.contains(packId)) {
+      return;
+    }
+    _ownedPalettePackIds = <String>{
+      ..._ownedPalettePackIds,
+      packId,
+    };
+    _persistList(_kOwnedPalettePackIdsKey, _ownedPalettePackIds.toList());
+    logger.info('PlayerState.grantPalettePack($packId reason=$reason)');
+    notifyListeners();
+  }
+
+  /// Records that the player has bought [brushId] from the Shop.
+  /// Idempotent.
+  void grantBrush(String brushId, {String reason = 'shop.brush'}) {
+    if (brushId.isEmpty) {
+      return;
+    }
+    if (_ownedBrushIds.contains(brushId)) {
+      return;
+    }
+    _ownedBrushIds = <String>{
+      ..._ownedBrushIds,
+      brushId,
+    };
+    _persistList(_kOwnedBrushIdsKey, _ownedBrushIds.toList());
+    logger.info('PlayerState.grantBrush($brushId reason=$reason)');
+    notifyListeners();
+  }
+
+  /// Records that the player has bought [gradientId] from the Shop.
+  /// Idempotent.
+  void grantGradient(String gradientId, {String reason = 'shop.gradient'}) {
+    if (gradientId.isEmpty) {
+      return;
+    }
+    if (_ownedGradientIds.contains(gradientId)) {
+      return;
+    }
+    _ownedGradientIds = <String>{
+      ..._ownedGradientIds,
+      gradientId,
+    };
+    _persistList(_kOwnedGradientIdsKey, _ownedGradientIds.toList());
+    logger.info('PlayerState.grantGradient($gradientId reason=$reason)');
+    notifyListeners();
+  }
+
   /// Writes a typed map to the Hive box. Same swallow-and-log policy
   /// as [_persist].
   void _persistMap<K, V>(String key, Map<K, V> values) {
     _persist(key, values);
+  }
+
+  // ── Sprint 6 — World Progression mutators ──────────────────────────────
+
+  /// Records that the player has dismissed the "NEW" celebration
+  /// for [worldId]. Idempotent — a second call is a no-op. Called
+  /// by [FirstUnlockService.markCelebrated] from the dialog's
+  /// dismiss path so the same world never re-triggers the toast.
+  void markWorldCelebrated(String worldId) {
+    if (worldId.isEmpty) return;
+    if (_celebratedWorldIds.contains(worldId)) return;
+    _celebratedWorldIds = <String>{
+      ..._celebratedWorldIds,
+      worldId,
+    };
+    _persistList(_kCelebratedWorldIdsKey, _celebratedWorldIds.toList());
+    logger.info('PlayerState.markWorldCelebrated($worldId)');
+    notifyListeners();
+  }
+
+  /// Records that the player has claimed the completion reward for
+  /// [worldId]. Idempotent — a second call is a no-op. Called by
+  /// [CompletionRewardService] AFTER the coins/gems + auto-unlock
+  /// are applied so the idempotency invariant ("you can't claim
+  /// twice") holds even if the reward application throws.
+  void claimWorldCompletionReward(String worldId) {
+    if (worldId.isEmpty) return;
+    if (_claimedWorldRewardIds.contains(worldId)) return;
+    _claimedWorldRewardIds = <String>{
+      ..._claimedWorldRewardIds,
+      worldId,
+    };
+    _persistList(
+      _kClaimedWorldRewardIdsKey,
+      _claimedWorldRewardIds.toList(),
+    );
+    logger.info('PlayerState.claimWorldCompletionReward($worldId)');
+    notifyListeners();
   }
 }
