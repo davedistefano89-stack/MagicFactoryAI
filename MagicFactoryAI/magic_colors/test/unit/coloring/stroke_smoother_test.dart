@@ -18,7 +18,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:magic_colors/features/coloring/painting/stroke_smoother.dart';
 
-
 void main() {
   group('StrokeSmoother.quadraticMidpoint — degenerate inputs', () {
     test('empty list returns empty list', () {
@@ -50,9 +49,12 @@ void main() {
 
     test('3 input points → 5 output points', () {
       const input = <double>[
-        0.0, 0.0,
-        10.0, 0.0,
-        20.0, 0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        20.0,
+        0.0,
       ];
       final out = StrokeSmoother.quadraticMidpoint(input);
       expect(out.length, 10);
@@ -75,9 +77,12 @@ void main() {
   group('StrokeSmoother.quadraticMidpoint — endpoint preservation', () {
     test('first and last original points preserved', () {
       const input = <double>[
-        0.0, 0.0,
-        10.0, 0.0,
-        20.0, 0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        20.0,
+        0.0,
       ];
       final out = StrokeSmoother.quadraticMidpoint(input);
       // First point: (0.0, 0.0) — indices 0 and 1.
@@ -90,9 +95,12 @@ void main() {
 
     test('midpoints lie within their segment span', () {
       const input = <double>[
-        0.0, 0.0,
-        10.0, 0.0,
-        20.0, 0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        20.0,
+        0.0,
       ];
       final out = StrokeSmoother.quadraticMidpoint(input);
       // First midpoint = (0+10)/2 = 5.
@@ -107,9 +115,12 @@ void main() {
   group('StrokeSmoother.quadraticMidpoint — purity', () {
     test('does not mutate the input list', () {
       final input = <double>[
-        0.0, 0.0,
-        5.0, 5.0,
-        10.0, 10.0,
+        0.0,
+        0.0,
+        5.0,
+        5.0,
+        10.0,
+        10.0,
       ];
       final original = List<double>.from(input);
       StrokeSmoother.quadraticMidpoint(input);

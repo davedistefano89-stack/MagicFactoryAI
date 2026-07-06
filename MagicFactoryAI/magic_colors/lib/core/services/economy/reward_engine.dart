@@ -31,13 +31,11 @@
 import '../../domain/economy/reward.dart';
 import '../../utils/logger.dart' show logger;
 
-
 /// Pure-function façade for every reward the game can dispense. Marked
 /// `abstract final` (sealed-by-construction) so neither tests nor
 /// screens extend or mock it — be a free function with the same name.
 abstract final class RewardEngine {
   RewardEngine._();
-
 
   // ── Daily chest reward curve (1..7) ─────────────────────────────────────
   /// Coin amounts indexed by streak day. Index 0 is unused so the curve
@@ -71,7 +69,6 @@ abstract final class RewardEngine {
   /// rewards never farm beyond the natural cap.
   static const int _kChestCapDay = 7;
 
-
   /// Computes the daily chest reward for the supplied streak day.
   /// Throws [ArgumentError] if [streakDays] is non-positive.
   static CompositeReward computeDailyChestReward(int streakDays) {
@@ -99,7 +96,6 @@ abstract final class RewardEngine {
     );
   }
 
-
   // ── Drawing completion reward (1 / 2 / 3 stars) ─────────────────────────
   /// Coin amounts indexed by drawing star quality (0..3). Index 0
   /// is intentionally 0 (a 0-star save is not a completion — see the
@@ -122,7 +118,6 @@ abstract final class RewardEngine {
     /* 2 stars */ 1,
     /* 3 stars */ 2,
   ];
-
 
   /// Computes the reward for completing a drawing with [starsEarned]
   /// in [worldId]. Throws [ArgumentError] if stars are out of range.
@@ -153,7 +148,6 @@ abstract final class RewardEngine {
     );
   }
 
-
   // ── Drawing completion eligibility ──────────────────────────────────────
   /// Minimum duration for a save to qualify as a "real" drawing rather
   /// than a 5-second scribble. Tuned for a 4-year-old demo-through to
@@ -164,7 +158,6 @@ abstract final class RewardEngine {
   /// enough to demonstrate skill; three (a primary, a secondary, a
   /// surprise pick) shows intent.
   static const int _kMinDistinctColors = 2;
-
 
   /// True iff a drawing meets the minimum threshold for being
   /// reward-eligible. Stroke count is intentionally NOT a gate: a
@@ -178,7 +171,6 @@ abstract final class RewardEngine {
         duration > _kMinDrawingDuration;
   }
 
-
   // ── Star-quality derivation from raw signals ─────────────────────────────
   /// Lower bound for a 3-star (true completion) drawing: at least this
   /// much wall-clock time must elapse to "earn" the third star purely
@@ -190,7 +182,6 @@ abstract final class RewardEngine {
 
   /// Lower bound for a 1-star drawing (the player's first save).
   static const Duration _kOneStarMinDuration = Duration(seconds: 15);
-
 
   /// Maps (duration × distinct-colour-count × stroke-count) to a
   /// 0..3 star rating. Pure function — same input, same star output.

@@ -37,7 +37,6 @@
 
 import 'dart:developer' as developer;
 
-
 // =============================================================================
 //  Logger — static facade over dart:developer.log.
 // =============================================================================
@@ -145,7 +144,6 @@ abstract final class Logger {
   }
 }
 
-
 // =============================================================================
 //  LoggerFacade — instance-style alias for `Logger`.
 // =============================================================================
@@ -213,7 +211,6 @@ class LoggerFacade {
         stackTrace: stackTrace,
       );
 }
-
 
 // =============================================================================
 //  Top-level convenience re-export — `logger.info(...)` syntax.

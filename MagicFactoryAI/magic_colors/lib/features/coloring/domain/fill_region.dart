@@ -18,7 +18,6 @@ String newFillRegionId() {
   return 'f_${nowMs.toRadixString(16)}_${(nowMs * 31).toRadixString(16)}';
 }
 
-
 /// Lightweight view-only struct for callers (tests, telemetry) that
 /// want to inspect a fill region's footprint without parsing the mask.
 ///

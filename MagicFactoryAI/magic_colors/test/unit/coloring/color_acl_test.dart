@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:magic_colors/features/coloring/data/palette_catalog.dart';
 import 'package:magic_colors/features/coloring/domain/color_acl.dart';
 
-
 void main() {
   group('ColorAcl.isLocked', () {
     test('returns false for tier-0 (free) palette indexes', () {
@@ -42,8 +41,7 @@ void main() {
       );
     });
 
-    test('returns false when tier-1 palette index is in unlockedIndexes',
-        () {
+    test('returns false when tier-1 palette index is in unlockedIndexes', () {
       expect(
         ColorAcl.isLocked(
           paletteIndex: 24,
@@ -53,7 +51,8 @@ void main() {
       );
     });
 
-    test('returns false for tier-2 (premium) palette indexes regardless of '
+    test(
+        'returns false for tier-2 (premium) palette indexes regardless of '
         'unlocked list (premium is gated by subscription, not by the list)',
         () {
       expect(
@@ -112,7 +111,8 @@ void main() {
   });
 
   group('ColorAcl.resolve', () {
-    test('returns tier=locked with unlockCostCoins + unlockCostStars for a '
+    test(
+        'returns tier=locked with unlockCostCoins + unlockCostStars for a '
         'locked tier-1 swatch', () {
       final entry = ColorAcl.resolve(
         paletteIndex: 24,
@@ -120,14 +120,13 @@ void main() {
         favoriteIndexes: const <int>[],
       );
       expect(entry.tier, ColorTier.locked);
-      expect(entry.unlockCostCoins,
-          PaletteCatalog.unlockCostCoinsFor(24));
-      expect(entry.unlockCostStars,
-          PaletteCatalog.unlockCostStarsFor(24));
+      expect(entry.unlockCostCoins, PaletteCatalog.unlockCostCoinsFor(24));
+      expect(entry.unlockCostStars, PaletteCatalog.unlockCostStarsFor(24));
       expect(entry.isLocked, true);
     });
 
-    test('returns tier=premium for a tier-2 swatch regardless of unlock '
+    test(
+        'returns tier=premium for a tier-2 swatch regardless of unlock '
         'grants', () {
       final entry = ColorAcl.resolve(
         paletteIndex: 28,

@@ -16,7 +16,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:magic_colors/core/services/economy/achievement_service.dart';
 
-
 void main() {
   group('AchievementService.catalog', () {
     test('Catalog contains exactly 12 achievements', () {
@@ -49,7 +48,6 @@ void main() {
     });
   });
 
-
   group('AchievementService.definitionById', () {
     test('Returns the definition for a known id', () {
       final AchievementDefinition? def =
@@ -65,7 +63,6 @@ void main() {
       expect(def, isNull);
     });
   });
-
 
   group('AchievementService.evaluate', () {
     const PlayerSnapshot emptySnapshot = PlayerSnapshot(
@@ -178,8 +175,7 @@ void main() {
         worldStars: <String, int>{'unicorn_valley': 1},
         ownedWorldIds: <String>{'unicorn_valley'},
       );
-      final List<AchievementDefinition> firstPass =
-          AchievementService.evaluate(
+      final List<AchievementDefinition> firstPass = AchievementService.evaluate(
         snapshot: s,
         previouslyUnlocked: const <String>{},
       );

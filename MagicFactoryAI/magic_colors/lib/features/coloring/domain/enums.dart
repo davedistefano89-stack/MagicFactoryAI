@@ -14,7 +14,6 @@
 //     expensive per-pixel shaders. Dark ink only.
 // =============================================================================
 
-
 /// The brush kinds. Order matters for storage: NEVER insert a new
 /// kind between the existing entries — append at the end and bump the
 /// palette revision in `palette_catalog.dart` so older strokes decode

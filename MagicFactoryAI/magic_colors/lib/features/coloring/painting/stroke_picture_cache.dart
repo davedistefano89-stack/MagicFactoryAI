@@ -39,7 +39,6 @@ import 'package:magic_colors/core/utils/logger.dart';
 import '../domain/drawing_stroke.dart';
 import 'brush_painter.dart';
 
-
 /// Caches [Picture] recordings keyed by stroke.id. Bound is the live
 /// stroke count. Disposing the cache releases every cached Picture.
 final class StrokePictureCache {
