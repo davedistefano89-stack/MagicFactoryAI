@@ -771,8 +771,47 @@ class ColoringController extends ChangeNotifier {
         'ColoringController._flush saved '
         'id=${_drawing.id} commands=${_drawing.effectiveCommands.length}',
       );
+      // Sprint 7 — bump the daily-gameplay counters BEFORE the
+      // reward-eligibility check. An ineligible drawing (under
+      // the 15s / 3-color threshold) still counts as a completed
+      // drawing, so the daily "color N drawings" challenge stays
+      // reactive. The star delta is computed from the SAME signal
+      // snapshot so we don't double-count.
+      _recordDailyTracking();
       _evaluateRewardEligibility();
     }
+  }
+
+  /// Sprint 7 — bumps the daily-gameplay counters via PlayerState.
+  /// Called from [_flush] after a successful save. Idempotent
+  /// against the same save (PlayerState.recordDrawingCompletion is
+  /// itself idempotent for repeated calls within a single draw,
+  /// because the dirty flag is reset after a successful save).
+  void _recordDailyTracking() {
+    final PlayerState? snapshot = player;
+    if (snapshot == null) {
+      return;
+    }
+    snapshot.recordDrawingCompletion();
+    // Snapshot the stars BEFORE the reward grant so the counter
+    // doesn't accidentally include the coins/gems delta (the
+    // drawing reward is currency, not stars).
+    final int stars = RewardEngine.starsFromSignals(
+      duration: _sessionDuration(),
+      distinctColorCount: _usedColorsThisSession.length,
+      strokeCount: _commands.length,
+    );
+    if (stars > 0) {
+      snapshot.recordStarEarned(stars);
+    }
+  }
+
+  /// Wall-clock duration of the current session. Falls back to
+  /// "now" when no stroke has fired yet (a fresh open) so the
+  /// star derivation never crashes on a cold session.
+  Duration _sessionDuration() {
+    final DateTime start = _sessionStart ?? DateTime.now();
+    return DateTime.now().difference(start);
   }
 
   // ── M1 — Player Economy integration ────────────────────────────────

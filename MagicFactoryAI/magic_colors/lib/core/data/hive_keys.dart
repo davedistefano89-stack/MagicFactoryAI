@@ -101,3 +101,40 @@ const String hiveKeyCelebratedWorldIds = 'player.celebratedWorldIds';
 /// Consumed by `CompletionRewardService` to make the claim
 /// idempotent.   `List<String>` of stable ids (kebab). Set semantics.
 const String hiveKeyClaimedWorldRewardIds = 'player.claimedWorldRewardIds';
+
+// ── Sprint 7 Daily Gameplay keys ──────────────────────────────────
+
+/// Key for the last daily-reset anchor date. Producer: PlayerState
+/// (`recordDrawingCompletion` / `recordStarEarned`). The daily
+/// tracking counters reset when this date != today's calendar
+/// date, so a corrupted box can never lock a counter at a stale
+/// value.   `DateTime?`.
+const String hiveKeyLastDailyTrackingDate = 'player.lastDailyTrackingDate';
+
+/// Key for the drawings-completed-today counter. Producer:
+/// PlayerState (`recordDrawingCompletion`). Reset on daily anchor
+/// change.   `int`.
+const String hiveKeyDrawingsCompletedToday = 'player.drawingsCompletedToday';
+
+/// Key for the stars-earned-today counter. Producer: PlayerState
+/// (`recordStarEarned`). Reset on daily anchor change.   `int`.
+const String hiveKeyStarsEarnedToday = 'player.starsEarnedToday';
+
+/// Key for the completed-challenges-today list. Producer:
+/// PlayerState (`markDailyChallengeCompleted`). Reset on daily
+/// anchor change. Stored as `List<String>` (Hive 2 has no Set
+/// adapter).   `List<String>` of stable ids (kebab).
+const String hiveKeyCompletedChallengesToday = 'player.completedChallengesToday';
+
+/// Key for the claimed-daily-reward anchor date. Producer:
+/// PlayerState (`claimDailyReward`). Stores the last
+/// `yyyy-MM-dd` date the daily reward was claimed so a re-claim
+/// the same day is a quiet no-op.   `String` of stable
+/// `yyyy-MM-dd` keys.
+const String hiveKeyClaimedDailyRewardDate = 'player.claimedDailyRewardDate';
+
+/// Key for the claimed-challenge-id set. Producer: PlayerState
+/// (`claimDailyChallengeReward`). Permanent across sessions so a
+/// future repeating challenge can never re-grant.   `List<String>`
+/// of stable ids (kebab). Set semantics.
+const String hiveKeyClaimedChallengeIds = 'player.claimedChallengeIds';

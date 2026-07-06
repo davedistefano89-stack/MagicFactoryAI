@@ -262,6 +262,34 @@ const CompositeReward _starCollectorTwentyReward = CompositeReward(
   ],
 );
 
+// Sprint 7 — Daily Gameplay achievement rewards. Tied to streak
+// milestones; the AchievementService.evaluate path fires them
+// off the same `streakDays` counter that powers the daily
+// challenge / reward claim flow.
+const CompositeReward _dailyChallengerReward = CompositeReward(
+  reason: 'achievement.daily_challenger',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.daily_challenger', amount: 50),
+    GemReward(reason: 'achievement.daily_challenger', amount: 2),
+  ],
+);
+
+const CompositeReward _dailyChampionReward = CompositeReward(
+  reason: 'achievement.daily_champion',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.daily_champion', amount: 200),
+    GemReward(reason: 'achievement.daily_champion', amount: 8),
+  ],
+);
+
+const CompositeReward _dailyLegendReward = CompositeReward(
+  reason: 'achievement.daily_legend',
+  children: <Reward>[
+    CoinReward(reason: 'achievement.daily_legend', amount: 1000),
+    GemReward(reason: 'achievement.daily_legend', amount: 50),
+  ],
+);
+
 // ── Evaluation helpers per achievement ────────────────────────────────────
 
 // Each `_isXxxUnlocked(snapshot)` is the unlockCondition. They are
@@ -339,6 +367,26 @@ bool _isStarCollectorTwentyUnlocked(PlayerSnapshot s) {
   final int totalStars =
       s.worldStars.values.fold<int>(0, (int a, int b) => a + b);
   return totalStars >= 20;
+}
+
+// ── Sprint 7 — Daily Gameplay achievements ────────────────────────────────
+
+bool _isDailyChallengerUnlocked(PlayerSnapshot s) {
+  // The daily-challenges flow marks the player with the
+  // `has_claimed_daily_challenge` set in the persistent
+  // snapshot. v1.0 approximation: 3+ claims across the streak
+  // (a "weekly challenger" type milestone).
+  return s.streakDays >= 3;
+}
+
+bool _isDailyChampionUnlocked(PlayerSnapshot s) {
+  // A full week of daily challenges claimed.
+  return s.streakDays >= 7;
+}
+
+bool _isDailyLegendUnlocked(PlayerSnapshot s) {
+  // A full month of daily challenges claimed.
+  return s.streakDays >= 30;
 }
 
 // =============================================================================
@@ -573,6 +621,34 @@ List<AchievementDefinition> _buildRuntimeCatalog() {
       tier: AchievementTier.gold,
       reward: _allWorldsCompletedReward,
       unlockCondition: _isAllWorldsCompletedUnlocked,
+    ),
+    // ── Sprint 7 — Daily Gameplay achievements (3 new entries) ─────
+    const AchievementDefinition(
+      id: 'daily_challenger',
+      title: 'Daily Challenger',
+      glyph: '⚡',
+      description: 'Open the app 3 days in a row.',
+      tier: AchievementTier.bronze,
+      reward: _dailyChallengerReward,
+      unlockCondition: _isDailyChallengerUnlocked,
+    ),
+    const AchievementDefinition(
+      id: 'daily_champion',
+      title: 'Daily Champion',
+      glyph: '🏆',
+      description: 'Open the app 7 days in a row.',
+      tier: AchievementTier.silver,
+      reward: _dailyChampionReward,
+      unlockCondition: _isDailyChampionUnlocked,
+    ),
+    const AchievementDefinition(
+      id: 'daily_legend',
+      title: 'Daily Legend',
+      glyph: '👑',
+      description: 'Open the app 30 days in a row.',
+      tier: AchievementTier.gold,
+      reward: _dailyLegendReward,
+      unlockCondition: _isDailyLegendUnlocked,
     ),
   ];
 }

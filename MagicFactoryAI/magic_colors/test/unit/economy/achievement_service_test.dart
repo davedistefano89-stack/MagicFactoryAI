@@ -18,11 +18,13 @@ import 'package:magic_colors/core/services/economy/achievement_service.dart';
 
 void main() {
   group('AchievementService.catalog', () {
-    test('Catalog contains exactly 16 achievements (12 base + 4 Sprint 6)', () {
+    test('Catalog contains exactly 19 achievements (12 base + 4 Sprint 6 + 3 Sprint 7)', () {
       // Sprint 6 added 4 World Progression achievements:
       //   first_world_completed, star_collector_ten,
       //   star_collector_twenty, all_worlds_completed.
-      expect(AchievementService.catalog.length, 16);
+      // Sprint 7 added 3 Daily Gameplay achievements:
+      //   daily_challenger, daily_champion, daily_legend.
+      expect(AchievementService.catalog.length, 19);
     });
 
     test('Catalog returns an unmodifiable list', () {

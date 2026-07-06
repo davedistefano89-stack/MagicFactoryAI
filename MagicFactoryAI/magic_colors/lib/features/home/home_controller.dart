@@ -29,11 +29,13 @@ import 'package:flutter/foundation.dart';
 
 import 'package:magic_colors/core/design/design_tokens.dart' show AppDuration;
 import 'package:magic_colors/core/domain/economy/reward.dart';
+import 'package:magic_colors/core/services/daily/daily_reward_service.dart';
 import 'package:magic_colors/core/services/economy/reward_engine.dart';
 import 'package:magic_colors/core/services/sound_service.dart';
 import 'package:magic_colors/core/state/player_state.dart';
 import 'package:magic_colors/core/utils/haptics.dart';
 import 'package:magic_colors/core/utils/logger.dart';
+import 'package:magic_colors/features/daily/presentation/widgets/daily_reward_dialog.dart';
 
 class HomeController extends ChangeNotifier {
   HomeController({required SoundService sound, required PlayerState player})
@@ -127,13 +129,24 @@ class HomeController extends ChangeNotifier {
 
     logger.info('HomeController.onClaimDailyReward streak=$preStreak');
 
+    // Sprint 7 — route the bundle (coins + gems + optional item)
+    // through the new service. The service is idempotent on a
+    // re-claim the same day (returns alreadyClaimed). The existing
+    // `reward.grantTo` line is intentionally REMOVED — the new
+    // service is the sole grant path so the player can't be
+    // double-credited (coins + gems would otherwise land twice).
+    final DailyRewardClaimResult claimResult =
+        DailyRewardService.claim(_player, today: DateTime.now());
+    if (claimResult == DailyRewardClaimResult.alreadyClaimed) {
+      logger.info(
+        'HomeController.onClaimDailyReward already claimed (Sprint 7 key)',
+      );
+      return null;
+    }
+
     // Bump the streak so a same-day re-claim is a no-op and the daily
     // chest UI rotates its label correctly.
     _player.recordStreak();
-
-    // Apply the reward. CompositeReward.grantTo is idempotent against
-    // zero children and against PlayerState's idempotent mutators.
-    reward.grantTo(_player);
 
     // Snapshot before the celebration audio so widgets that watch
     // _lastDailyRewardReward can start the count-up animation in the
@@ -161,4 +174,15 @@ class HomeController extends ChangeNotifier {
   /// Exposed as a constant getter so [DailyRewardCard] can reuse the
   /// project-standard medium timing without re-importing design_tokens.
   Duration get pillCountUpDuration => AppDuration.medium;
+
+  // ── Sprint 7 — Daily Reward celebration dialog ────────────────────────
+  /// Convenience helper that returns the [DailyRewardSummary] for
+  /// the player's CURRENT streak. Used by the home shell to pop
+  /// the [DailyRewardDialog] after a successful claim. The
+  /// summary bundles the coin + gem grant with the optional item
+  /// row (palette / brush / gradient) so the dialog renders a
+  /// 3-pill row on item-days.
+  DailyRewardSummary dailyRewardSummary() {
+    return DailyRewardService.computeForPlayer(_player);
+  }
 }

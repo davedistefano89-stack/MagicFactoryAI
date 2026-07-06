@@ -76,6 +76,17 @@ const String _kOwnedGradientIdsKey = hiveKeyOwnedGradientIds;
 // progress section).
 const String _kCelebratedWorldIdsKey = hiveKeyCelebratedWorldIds;
 const String _kClaimedWorldRewardIdsKey = hiveKeyClaimedWorldRewardIds;
+// Sprint 7 — Daily Gameplay persistence. Same convention. The
+// "tracking" keys are reset lazily when the day rolls over (the
+// service layer calls `_maybeResetDailyTracking()` before each
+// read; the hydrate path also calls it so a cold-launch on a new
+// day starts with a clean slate).
+const String _kLastDailyTrackingDateKey = hiveKeyLastDailyTrackingDate;
+const String _kDrawingsCompletedTodayKey = hiveKeyDrawingsCompletedToday;
+const String _kStarsEarnedTodayKey = hiveKeyStarsEarnedToday;
+const String _kCompletedChallengesTodayKey = hiveKeyCompletedChallengesToday;
+const String _kClaimedDailyRewardDateKey = hiveKeyClaimedDailyRewardDate;
+const String _kClaimedChallengeIdsKey = hiveKeyClaimedChallengeIds;
 
 // =============================================================================
 //  PlayerState — ChangeNotifier.
@@ -204,6 +215,42 @@ final class PlayerState extends ChangeNotifier {
   /// sessions. CompletionRewardService refuses to grant twice.
   Set<String> _claimedWorldRewardIds = const <String>{};
 
+  // ── Sprint 7 — Daily Gameplay state ────────────────────────────
+  /// Calendar date the [_drawingsCompletedToday] / [_starsEarnedToday]
+  /// / [_completedChallengesToday] counters were last reset.
+  /// `null` for a fresh install — the next [recordDrawingCompletion]
+  /// (or any getter) triggers a reset. Persisted as `DateTime?`.
+  DateTime? _lastDailyTrackingDate;
+
+  /// Drawings the player has finished today. Reset on day roll.
+  /// Persisted as `int`. Bumped from
+  /// `ColoringController._flush` via [recordDrawingCompletion].
+  int _drawingsCompletedToday = 0;
+
+  /// Stars the player has earned today. Reset on day roll.
+  /// Persisted as `int`. Bumped from
+  /// `ColoringController._flush` via [recordStarEarned] when
+  /// stars > 0 were granted.
+  int _starsEarnedToday = 0;
+
+  /// Challenge ids the player has completed today. Reset on day
+  /// roll. The [DailyChallengeService] reads this for the
+  /// progress snapshot so a completed challenge stays completed
+  /// across rebuilds on the same day. Persisted as `List<String>`.
+  List<String> _completedChallengesToday = <String>[];
+
+  /// `yyyy-MM-dd` key of the last day the daily reward was
+  /// claimed. `null` for a fresh install. The
+  /// [DailyRewardService.isClaimedToday] predicate compares
+  /// this against `DateTime.now()` so a re-launch the same day
+  /// refuses a re-claim.
+  String? _claimedDailyRewardDate;
+
+  /// Challenge ids the player has ever claimed (across days).
+  /// Backed by Hive so a future repeating challenge can never
+  /// re-grant. Set semantics.
+  Set<String> _claimedChallengeIds = const <String>{};
+
   int get coins => _coins;
   int get gems => _gems;
 
@@ -277,6 +324,43 @@ final class PlayerState extends ChangeNotifier {
   /// True iff the completion reward for [worldId] has been claimed.
   bool hasClaimedWorldReward(String worldId) =>
       _claimedWorldRewardIds.contains(worldId);
+
+  // ── Sprint 7 — Daily Gameplay read ─────────────────────────────────
+  /// Drawings the player has completed today. Auto-resets when
+  /// the calendar date changes (the getter calls
+  /// [_maybeResetDailyTracking] before returning).
+  int get drawingsCompletedToday {
+    _maybeResetDailyTracking();
+    return _drawingsCompletedToday;
+  }
+
+  /// Stars the player has earned today. Auto-resets on day roll.
+  int get starsEarnedToday {
+    _maybeResetDailyTracking();
+    return _starsEarnedToday;
+  }
+
+  /// Challenge ids the player has completed today. Auto-resets
+  /// on day roll.
+  List<String> get completedChallengesToday {
+    _maybeResetDailyTracking();
+    return List<String>.unmodifiable(_completedChallengesToday);
+  }
+
+  /// `yyyy-MM-dd` key of the last claimed daily reward, or null.
+  /// The [DailyRewardService.isClaimedToday] predicate compares
+  /// this against today.
+  String? get claimedDailyRewardDate => _claimedDailyRewardDate;
+
+  /// Read-only view of the permanent claimed-challenge set.
+  Set<String> get claimedChallengeIds =>
+      Set<String>.unmodifiable(_claimedChallengeIds);
+
+  /// True iff the player has already claimed the reward for
+  /// [challengeId]. Used by the UI to flip the CTA between
+  /// "Claim" and "Claimed" without re-walking the set.
+  bool hasClaimedDailyChallenge(String challengeId) =>
+      _claimedChallengeIds.contains(challengeId);
 
   // ── M2.4 — ParentGate read ──────────────────────────────────────────
   /// True iff the user has successfully completed a math challenge
@@ -683,6 +767,21 @@ final class PlayerState extends ChangeNotifier {
     // cannot trigger a spurious celebration or re-grant a reward.
     _celebratedWorldIds = _readIdSet(_kCelebratedWorldIdsKey);
     _claimedWorldRewardIds = _readIdSet(_kClaimedWorldRewardIdsKey);
+
+    // Sprint 7 hydrate — 6 daily-gameplay entries. The 2 sets
+    // use _readIdSet (Set semantics over a List payload). The
+    // anchor + counters use _readOrNull / _readOrDefault. The
+    // daily-reset sweep runs in [_maybeResetDailyTracking] the
+    // first time any getter is touched.
+    _lastDailyTrackingDate = _readOrNull<DateTime>(_kLastDailyTrackingDateKey);
+    _drawingsCompletedToday =
+        _readOrDefault<int>(_kDrawingsCompletedTodayKey, 0);
+    _starsEarnedToday = _readOrDefault<int>(_kStarsEarnedTodayKey, 0);
+    _completedChallengesToday =
+        _readIdSet(_kCompletedChallengesTodayKey).toList();
+    _claimedDailyRewardDate =
+        _readOrNull<String>(_kClaimedDailyRewardDateKey);
+    _claimedChallengeIds = _readIdSet(_kClaimedChallengeIdsKey);
   }
 
   // ── M2.4 — ParentGate mutators ───────────────────────────────────────
@@ -988,5 +1087,126 @@ final class PlayerState extends ChangeNotifier {
     );
     logger.info('PlayerState.claimWorldCompletionReward($worldId)');
     notifyListeners();
+  }
+
+  // ── Sprint 7 — Daily Gameplay mutators ──────────────────────────────
+
+  /// Records that the player finished a drawing. Bumps the
+  /// today-counter (auto-reset on day roll) and writes through to
+  /// Hive. Called from [ColoringController._flush] on a successful
+  /// save. Idempotent against double-calls.
+  void recordDrawingCompletion() {
+    _maybeResetDailyTracking();
+    _drawingsCompletedToday = _drawingsCompletedToday + 1;
+    _persist(_kDrawingsCompletedTodayKey, _drawingsCompletedToday);
+    logger.info(
+      'PlayerState.recordDrawingCompletion → $_drawingsCompletedToday',
+    );
+    notifyListeners();
+  }
+
+  /// Records that the player earned [delta] stars (delta>0). Used
+  /// by [ColoringController._flush] after `grantWorldStars` so the
+  /// daily-challenges progress is reactive to drawing completions.
+  /// Non-positive deltas are ignored.
+  void recordStarEarned(int delta) {
+    if (delta <= 0) return;
+    _maybeResetDailyTracking();
+    _starsEarnedToday = _starsEarnedToday + delta;
+    _persist(_kStarsEarnedTodayKey, _starsEarnedToday);
+    logger.info('PlayerState.recordStarEarned(+$delta) → $_starsEarnedToday');
+    notifyListeners();
+  }
+
+  /// Marks [challengeId] as completed for today. Idempotent — a
+  /// second call on the same day is a no-op. Called by
+  /// [DailyChallengeService] when the progress crosses the target.
+  void markDailyChallengeCompleted(String challengeId) {
+    if (challengeId.isEmpty) return;
+    _maybeResetDailyTracking();
+    if (_completedChallengesToday.contains(challengeId)) return;
+    _completedChallengesToday = <String>[
+      ..._completedChallengesToday,
+      challengeId,
+    ];
+    _persistList(
+      _kCompletedChallengesTodayKey,
+      _completedChallengesToday,
+    );
+    logger.info('PlayerState.markDailyChallengeCompleted($challengeId)');
+    notifyListeners();
+  }
+
+  /// Marks the daily reward as claimed for [day] (1..7). Persists
+  /// the yyyy-MM-dd key so a re-launch the same day refuses a
+  /// re-claim. Idempotent.
+  void markDailyRewardClaimed(int day, {DateTime? today}) {
+    final DateTime d = today ?? DateTime.now();
+    final String m = d.month.toString().padLeft(2, '0');
+    final String dayStr = d.day.toString().padLeft(2, '0');
+    final String key = '${d.year}-$m-$dayStr';
+    if (_claimedDailyRewardDate == key) return;
+    _claimedDailyRewardDate = key;
+    _persist(_kClaimedDailyRewardDateKey, key);
+    logger.info(
+      'PlayerState.markDailyRewardClaimed day=$day key=$key',
+    );
+    notifyListeners();
+  }
+
+  /// Records that the player has claimed the reward for
+  /// [challengeId]. Permanent across sessions so a future repeat
+  /// of the same challenge can never re-grant.
+  void claimDailyChallengeReward(String challengeId) {
+    if (challengeId.isEmpty) return;
+    if (_claimedChallengeIds.contains(challengeId)) return;
+    _claimedChallengeIds = <String>{
+      ..._claimedChallengeIds,
+      challengeId,
+    };
+    _persistList(_kClaimedChallengeIdsKey, _claimedChallengeIds.toList());
+    logger.info('PlayerState.claimDailyChallengeReward($challengeId)');
+    notifyListeners();
+  }
+
+  /// Lazy day-roll sweep. If the persisted anchor date differs
+  /// from today's calendar day (or is null for a fresh install),
+  /// the 3 daily counters are reset and the new anchor is
+  /// persisted. Called from every daily-counter getter + mutator
+  /// so the reset is invisible to the UI and atomic with the
+  /// next read.
+  void _maybeResetDailyTracking() {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime? anchor = _lastDailyTrackingDate;
+    final DateTime? anchorDay = anchor == null
+        ? null
+        : DateTime(anchor.year, anchor.month, anchor.day);
+    if (anchorDay != null && today.isAtSameMomentAs(anchorDay)) {
+      return; // same day — no reset.
+    }
+    _drawingsCompletedToday = 0;
+    _starsEarnedToday = 0;
+    _completedChallengesToday = <String>[];
+    _lastDailyTrackingDate = today;
+    _persist(_kDrawingsCompletedTodayKey, 0);
+    _persist(_kStarsEarnedTodayKey, 0);
+    _persistList(_kCompletedChallengesTodayKey, <String>[]);
+    _persist(_kLastDailyTrackingDateKey, today);
+    logger.info(
+      'PlayerState._maybeResetDailyTracking reset day=$today',
+    );
+  }
+
+  /// Test seam — forces a daily reset. Sets the anchor to
+  /// yesterday so the next read of any counter triggers
+  /// [_maybeResetDailyTracking]. Production callers MUST use the
+  /// date-based getters; the `@visibleForTesting` annotation is
+  /// the analyzer guard.
+  @visibleForTesting
+  void rollDailyTrackingForTest({DateTime? today}) {
+    final DateTime d = today ?? DateTime.now();
+    _lastDailyTrackingDate = d.subtract(const Duration(days: 1));
+    _persist(_kLastDailyTrackingDateKey, _lastDailyTrackingDate);
   }
 }
