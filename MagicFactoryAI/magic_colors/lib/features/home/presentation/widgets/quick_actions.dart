@@ -247,9 +247,17 @@ class _QuickActionTile extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: <Widget>[
-                  Text(
-                    spec.glyph,
-                    style: const TextStyle(fontSize: _kGlyphFontSize),
+                  Expanded(
+                    child: Center(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.center,
+                        child: Text(
+                          spec.glyph,
+                          style: const TextStyle(fontSize: _kGlyphFontSize),
+                        ),
+                      ),
+                    ),
                   ),
                   _kGlyphLabelGap,
                   Text(

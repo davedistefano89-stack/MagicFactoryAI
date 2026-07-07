@@ -57,7 +57,7 @@ class SplashLogo extends StatefulWidget {
 }
 
 class _SplashLogoState extends State<SplashLogo>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _entry = AnimationController(
     vsync: this,
     duration: widget.duration ?? AppDuration.hero,

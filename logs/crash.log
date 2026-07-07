@@ -1,0 +1,6 @@
+Windows fatal exception: access violation
+
+Current thread 0x00003b18 (most recent call first):
+  File "C:\Users\daved\OneDrive\Desktop\Magic Universe\MagicFactoryAI\app\application.py", line 58 in run
+  File "C:\Users\daved\OneDrive\Desktop\Magic Universe\MagicFactoryAI\main.py", line 15 in main
+  File "C:\Users\daved\OneDrive\Desktop\Magic Universe\MagicFactoryAI\main.py", line 19 in <module>
