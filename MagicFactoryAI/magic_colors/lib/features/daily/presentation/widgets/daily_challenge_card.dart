@@ -26,6 +26,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/design/design_tokens.dart';
+import '../../../../core/domain/daily/daily_challenge_progress.dart';
 import '../../../../core/services/analytics_service.dart';
 import '../../../../core/services/daily/daily_challenge_service.dart';
 import '../../../../core/state/player_state.dart';
@@ -62,9 +63,16 @@ class DailyChallengeCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: <Widget>[
-              Text('Today\u2019s challenges', style: AppTypography.titleSm),
+              Expanded(
+                child: Text(
+                  'Today\u2019s challenges',
+                  style: AppTypography.titleSm,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              AppSpacing.hGapSm,
               const Text('⚡', style: TextStyle(fontSize: 22)),
             ],
           ),
@@ -133,9 +141,14 @@ class _ChallengeRow extends StatelessWidget {
                       c.title,
                       style: AppTypography.bodyMedium
                           .copyWith(color: AppColors.deepInk),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  if (p.isClaimed) const _ClaimedBadge(),
+                  if (p.isClaimed) ...<Widget>[
+                    AppSpacing.hGapSm,
+                    const _ClaimedBadge(),
+                  ],
                 ],
               ),
               const SizedBox(height: 2),
@@ -146,13 +159,15 @@ class _ChallengeRow extends StatelessWidget {
                     ? 'Reward collected'
                     : '${p.current} / ${p.target} \u2014 ${c.description}',
                 style: AppTypography.caption(color: AppColors.smoke),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
               if (p.canClaim) ...<Widget>[
                 AppSpacing.vGapSm,
                 PrimaryButton(
                   label: _buildClaimLabel(c.rewardCoins, c.rewardGems),
                   fullWidth: true,
-                  size: PrimaryButtonSize.compact,
+                  size: PrimaryButtonSize.small,
                   gradient: AppGradients.playNow,
                   onPressed: () => _onClaim(context),
                 ),
@@ -161,6 +176,8 @@ class _ChallengeRow extends StatelessWidget {
                 Text(
                   '${p.remaining} more to go',
                   style: AppTypography.caption(color: AppColors.smoke),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ],

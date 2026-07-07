@@ -1,0 +1,6 @@
+# Magic Colors asset placeholder.
+
+This file exists so the `assets/` directory is preserved in version control
+and `flutter pub get` does not warn `Asset directory assets does not exist`.
+
+Add real audio, image, or Lottie files alongside this file as they ship.

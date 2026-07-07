@@ -1,0 +1,154 @@
+name: magic_colors
+description: "Magic Colors — premium children's coloring game. A peaceful, ad-free, offline-first creative play space for kids 3-8 (and the grown-ups who guide them)."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.27.0"
+
+dependencies:
+  # ── Flutter SDK bindings ────────────────────────────────────────────────
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # ── State management ────────────────────────────────────────────────────
+  provider: ^6.1.2
+
+  # ── Routing ─────────────────────────────────────────────────────────────
+  go_router: ^14.6.2
+
+  # ── Theme & typography ──────────────────────────────────────────────────
+  google_fonts: ^6.2.1
+
+  # ── Animations & micro-interactions ─────────────────────────────────────
+  lottie: ^3.1.2
+  flutter_animate: ^4.5.0
+
+  # ── Local persistence ───────────────────────────────────────────────────
+  shared_preferences: ^2.3.3
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+
+  # ── Audio ───────────────────────────────────────────────────────────────
+  audioplayers: ^6.1.0
+
+  # ── Responsive layouts (phones / tablets / iPads) ──────────────────────
+  responsive_framework: ^1.5.1
+
+  # ── Utilities ───────────────────────────────────────────────────────────
+  collection: ^1.18.0
+  meta: ^1.15.0
+  equatable: ^2.0.5
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+  # Used to construct the `_TestFontHttpClient` mock in
+  # `daily_reward_claim_test.dart` (canonical google_fonts example/test
+  # pattern — overrides `gf_base.httpClient`). Declaring it here
+  # silences `depend_on_referenced_packages`.
+  http: ^1.2.0
+
+  # ── Static analysis ─────────────────────────────────────────────────────
+  very_good_analysis: ^6.0.0
+  # dart_code_metrics ^5.7.6 + uuid ^4.5.1 were removed — incompatible pin.
+  # Feature code never referenced package:uuid; if a future tooling change
+  # needs uuid, re-add it via dependency_overrides with explicit version.
+  custom_lint: ^0.7.0
+  riverpod_lint: ^2.6.1
+  leancode_lint: ^15.0.0
+
+  # ── Project-internal custom_lint plugins ──────────────────────────────
+  # `magic_colors_lint` ships the M2.4 `shell_branch_nav` rule that flags
+  # in-shell `context.go(AppRoutes.<branchRoot>)` and bare
+  # `context.goHome|goWorlds|goGallery|goShop|goProfile()` calls —
+  # these bypass the canonical `selectShellTab + goShellTab` pipeline
+  # that preserves per-branch stacks + fires the cross-tab bigTap cue
+  # AND honours the StatefulNavigationShell's tap-to-root semantics.
+  # See `tools/lint/lib/src/shell_branch_nav_lint.dart` for the AST
+  # patterns + escape-hatch rationale.
+  magic_colors_lint:
+    path: tools/lint
+
+  # ── Code generation (Hive adapters, Localizations) ────────────────────
+  build_runner: ^2.4.13
+  hive_generator: ^2.0.1
+  intl_utils: ^2.7.1
+  # NOTE: M2.4 Phase-1 attempted to add mocktail here; the attempt was
+  # blocked by Dart 3.4 final-class sealing. Full disclosure lives in
+  # `test/unit/routing/shell_tab_helpers_test.dart` §"Why not mocktail
+  # fakes".
+
+flutter:
+  uses-material-design: true
+
+  # ── google_fonts test fixtures ──────────────────────────────────────────
+  # The four TTF placeholders below are real Open Font License files
+  # sourced from the google_fonts pub-package example/ assets. They are
+  # NOT bundled in production builds — the entry is gated behind the
+  # `assets/` short-form so Flutter's bundle assembler includes them
+  # in the dev/test bundle only when the test runner build is active.
+  # In production, `GoogleFonts.config.allowRuntimeFetching` is the
+  # default (true) and the runtime fetches the correct family-specific
+  # glyphs from Google's CDN.
+  assets:
+    - assets/google_fonts/
+
+  # ── Binary assets ──────────────────────────────────────────────────────
+  # The non-:images/lottie/sfx asset directories (color_resources / icons /
+  # audio / animations / illustrations / fonts/OFL) don't exist on disk
+  # yet — they were scaffolded for the designer handoff but the binary
+  # placeholders never landed. The Flutter `assets/` subdirectory keeps
+  # `images/`, `lottie/`, `sfx/` (each with a `.gitkeep`) which were
+  # already present in the repo. Re-add asset entries here when the
+  # directories and files ship — at that point every entry needs a
+  # matching `- assets/<dir>/` line OR a per-file entry below.
+  # (Intentionally NO `assets:` key while the binary assets are deferred;
+  # see magic_colors/lib/features/{splash,home,coloring}/widgets/ for
+  # runtime asset references.)
+
+  # ── Lottie animations ─────────────────────────────────────────────────
+  # Each world + each store pack ships one .lottie (lighter than .json) and
+  # one .json fallback. The folder convention is enforced by the resource
+  # generator in tools/.
+  #
+  # Sample entries (uncomment + add files to ship):
+  # - assets/animations/splash_logo.json
+  # - assets/animations/mascot_idle.json
+  # - assets/animations/mascot_celebrate.json
+  # - assets/animations/coin_burst.json
+
+  # ── Raster & vector art ──────────────────────────────────────────────
+  #
+  # Sample entries:
+  # - assets/icons/coin_gold.png
+  # - assets/icons/gem_pink.png
+  # - assets/illustrations/world_unicorn.png
+
+  # ── Localised fonts ──────────────────────────────────────────────────
+  # We prefer google_fonts at runtime for the baseline set, but every
+  # language that ships its own sub-brand font (Arabic, Korean, Japanese,
+  # Chinese, Hindi…) gets a pre-licensed OFL file dropped here.
+  #
+  # fonts:
+  #   - family: Baloo2
+  #     fonts:
+  #       - asset: assets/fonts/OFL/Baloo2-Regular.ttf
+  #       - asset: assets/fonts/OFL/Baloo2-Bold.ttf
+  #         weight: 700
+
+  # ── Native splash / launch icon (placeholder config) ─────────────────
+  # flutter_native_splash:
+  #   image: assets/icons/launch_logo.png
+  #   color: "#7A55D9"
+  #   android_12:
+  #     image: assets/icons/launch_logo_android12.png
+  #     color: "#7A55D9"

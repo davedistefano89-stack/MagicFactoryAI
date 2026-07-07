@@ -1,0 +1,142 @@
+// SplashScreen — animated rainbow gradient + sparkle field + breathing
+// mascot + animated logo → smooth fade to Home.
+
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/routing/app_routes.dart';
+
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_gradients.dart';
+import 'widgets/animated_logo.dart';
+import 'widgets/sparkle_field.dart';
+import 'widgets/splash_mascot.dart';
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen>
+    with TickerProviderStateMixin {
+  late final AnimationController _gradientController;
+  late final AnimationController _logoController;
+
+  @override
+  void initState() {
+    super.initState();
+    _gradientController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat();
+    _logoController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..forward();
+   Future<void>.delayed(const Duration(seconds: 3), () {
+  if (!mounted) return;
+  context.go(AppRoutes.home);
+  });
+} 
+
+  @override
+  void dispose() {
+    _gradientController.dispose();
+    _logoController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Brightness brightness = Theme.of(context).brightness;
+    return Scaffold(
+      body: Stack(
+        children: <Widget>[
+          // Animated rainbow gradient background.
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _gradientController,
+              builder: (BuildContext context, Widget? _) {
+                return Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment(-1 + _gradientController.value * 2, -1),
+                      end: Alignment(1 - _gradientController.value * 2, 1),
+                      // M2.3 PRODUCTION — route the light-mode rainbow
+                      // through `AppGradients.rainbowStops` (single
+                      // source of truth shared with the World-unlock
+                      // pop-up and Premium shimmer), and the dark-mode
+                      // gradient through the existing 3-stop night-sky
+                      // palette. This fixes the previously-missing
+                      // rainbow colour getters that pubspec couldn't
+                      // resolve.
+                      colors: brightness == Brightness.dark
+                          ? const <Color>[
+                              AppColors.skyTopNight,
+                              AppColors.skyMidNight,
+                              AppColors.skyBottomNight,
+                            ]
+                          : AppGradients.rainbowStops,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const Positioned.fill(
+            child: SparkleField(seed: 42),
+          ),
+          // Center stack: mascot → logo → tagline.
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                SplashMascot(
+                  size: 140,
+                  pulse: _logoController,
+                ),
+                const SizedBox(height: 24),
+                AnimatedLogo(controller: _logoController),
+                const SizedBox(height: 12),
+                _buildTagline(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTagline() {
+    return AnimatedBuilder(
+      animation: _logoController,
+      builder: (BuildContext context, Widget? _) {
+        final double t = _logoController.value;
+        final double opacity = t < 0.6 ? 0 : ((t - 0.6) / 0.4).clamp(0.0, 1.0);
+        return Opacity(
+          opacity: opacity,
+          child: Text(
+            'Tap · Color · Smile',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Colors.white.withValues(alpha: 0.85),
+              letterSpacing: 2.4 + 2 * math.sin(t * math.pi * 2),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// M2.3 PRODUCTION — the splash's light-mode rainbow gradient routes
+// through `AppGradients.rainbowStops` (see the build() method above).
+// The day + dark branches were previously keyed off the
+// `AppColors.rainbowPurple…Red` getters and `AppGradients.splashRainbow`
+// which never landed in `app_colors.dart`/`app_gradients.dart`. Keep
+// this comment as a breadcrumb so the next sweep doesn't try to
+// reintroduce them.

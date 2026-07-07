@@ -28,6 +28,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'package:magic_colors/core/design/design_tokens.dart' show AppDuration;
+import 'package:magic_colors/core/domain/daily/daily_reward_summary.dart';
 import 'package:magic_colors/core/domain/economy/reward.dart';
 import 'package:magic_colors/core/services/daily/daily_reward_service.dart';
 import 'package:magic_colors/core/services/economy/reward_engine.dart';
@@ -35,7 +36,6 @@ import 'package:magic_colors/core/services/sound_service.dart';
 import 'package:magic_colors/core/state/player_state.dart';
 import 'package:magic_colors/core/utils/haptics.dart';
 import 'package:magic_colors/core/utils/logger.dart';
-import 'package:magic_colors/features/daily/presentation/widgets/daily_reward_dialog.dart';
 
 class HomeController extends ChangeNotifier {
   HomeController({required SoundService sound, required PlayerState player})

@@ -14,7 +14,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:magic_colors/core/domain/daily/daily_challenge.dart';
 import 'package:magic_colors/core/domain/daily/daily_challenge_kind.dart';
 import 'package:magic_colors/core/domain/daily/daily_challenge_progress.dart';
-import 'package:magic_colors/core/domain/daily/daily_reward_kind.dart';
 import 'package:magic_colors/core/domain/daily/daily_reward_summary.dart';
 import 'package:magic_colors/core/services/daily/daily_challenge_service.dart';
 import 'package:magic_colors/core/services/daily/daily_reward_service.dart';
@@ -28,7 +27,6 @@ PlayerState _newPlayer({
   int coins = 0,
   int gems = 0,
   bool isPremium = false,
-  int streakDays = 1,
   Set<String> ownedPacks = const <String>{},
   Set<String> ownedBrushes = const <String>{},
   Set<String> ownedGradients = const <String>{},
@@ -37,22 +35,14 @@ PlayerState _newPlayer({
   final PlayerState player = PlayerState.inMemory();
   player.setEconomyForTest(coins: coins, gems: gems);
   if (isPremium) player.setPremium(true);
-  // Set streak via repeated recordStreak calls. For tests we
-  // bypass by directly forcing a streak via setPremium-style
-  // (no public setter on streakDays). Use a small helper: grant
-  // premium + bump a recordStreak on a fresh install yields
-  // streakDays=1; the test only needs the day-of-claim behavior.
   ownedPacks.forEach(player.grantPalettePack);
   ownedBrushes.forEach(player.grantBrush);
   ownedGradients.forEach(player.grantGradient);
   claimedChallenges.forEach(player.claimDailyChallengeReward);
   // The setEconomyForTest seam doesn't expose streakDays; tests
   // that need a specific streak use the existing recordStreak
-  // path on a frozen DateTime. For the simple "default streak =
-  // 1" case, the player has already been bumped once during the
-  // constructor hydrate (no, actually the inMemory path doesn't
-  // call recordStreak). So the default here is 0. The
-  // DailyRewardService clamps to day-1 on a 0 streak.
+  // path on a frozen DateTime. The default streak here is 0;
+  // the DailyRewardService clamps to day-1 on a 0 streak.
   return player;
 }
 

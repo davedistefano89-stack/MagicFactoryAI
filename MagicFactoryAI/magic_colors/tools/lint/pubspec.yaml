@@ -1,0 +1,41 @@
+name: magic_colors_lint
+description: >-
+  Magic Colors internal custom_lint plugin. Surfaces in-shell
+  `context.go(AppRoutes.<branchRoot>)` calls and bare
+  `context.goHome|Worlds/Gallery/Shop/Profile()` extension calls — these
+  bypass the canonical shell-tab pipeline
+  (`selectShellTab` + `goShellTab`) which preserves per-branch
+  NavigationState mirrors, fires the cross-tab bigTap audio cue, AND
+  honours the StatefulNavigationShell's tap-to-root semantics.
+  Add `// ignore: shell_branch_nav` on the same line for the two
+  legitimate out-of-shell escape hatches: splash → home cold-start
+  bootstrap, and coloring → worlds deep-link recovery.
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  # Plugin authoring lives in custom_lint_core (LintRule, DartLintRule,
+  # LintCode, PluginBase, CustomLintResolver, CustomLintContext,
+  # LintRuleNodeRegistry). custom_lint_builder adds the analyzer-plugin
+  # host-side helpers on top; we don't need them here.
+  analyzer: ^6.7.0
+  custom_lint_core: ^0.7.0
+  # `@visibleForTesting` on ShellBranchNavLint.shouldFlag() so the
+  # AST decision tree stays testable without spinning up a custom_lint
+  # framework driver (0.7.x has no public test-driver surface).
+  # Pinned to `^1.15.0` to match the Flutter SDK pin on `meta` (the
+  # `flutter_test` SDK package hard-pins `meta` to exactly 1.15.0;
+  # `^1.16.0` would conflict because the resolver cannot pick a
+  # version that satisfies both the upper bound 1.16.0 and the pin
+  # 1.15.0). `@visibleForTesting` itself has shipped in `meta` since
+  # 1.5.0, so the lower bound is more than sufficient.
+  meta: ^1.15.0
+
+dev_dependencies:
+  # AST-shape smoke tests live under `test/`. `package:test` (NOT
+  # flutter_test) because the plugin is a pure-Dart package — no
+  # Flutter SDK needed.
+  test: ^1.25.0
